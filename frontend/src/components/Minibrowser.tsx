@@ -10,7 +10,10 @@ type Wardrobe = ReturnType<typeof useWardrobe>
 // Worker proxy origin. Dev default '' keeps the iframe on the Vite dev
 // server, whose /p rule forwards to wrangler (vite.config.js → server.proxy).
 // Production sets VITE_PROXY_URL=https://<worker>.workers.dev in .env.
-const PROXY_URL = (import.meta.env.VITE_PROXY_URL as string | undefined) ?? ''
+// Normalize: a bare host (no protocol) would become a relative iframe src —
+// assume https:// unless an explicit scheme is given.
+const rawProxyUrl = (import.meta.env.VITE_PROXY_URL as string | undefined) ?? ''
+const PROXY_URL = rawProxyUrl && !rawProxyUrl.startsWith('http') ? `https://${rawProxyUrl}` : rawProxyUrl
 
 // The minibrowser: iframes the store through the proxy worker. The injected
 // scraper highlights config-targeted product images; clicking one postMessages
