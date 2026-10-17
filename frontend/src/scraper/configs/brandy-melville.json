@@ -1,0 +1,43 @@
+{
+  "site": "brandy-melville",
+  "brand": "Brandy Melville",
+  "matchHosts": ["us.brandymelville.com", "brandymelvilleusa.com"],
+
+  "catalog": { "kind": "shopify" },
+
+  "isProductPage": {
+    "urlPattern": "/products/",
+    "jsonLdType": "Product"
+  },
+
+  "jsonLd": {
+    "use": true,
+    "type": "Product",
+    "notes": "VERIFIED 2026-10: product pages ship one application/ld+json block with @type Product. Fields: name, url, image (array, first = main), brand.name, offers[] (price, priceCurrency, availability). No category field - derive type from name keywords (see scraper.js TYPE_MAP)."
+  },
+
+  "selectors": {
+    "productUrl": "link[rel=canonical]",
+    "name": "h1.product__title",
+    "image": ".product__media img",
+    "type": null,
+    "price": "JSON-LD offers[0].price preferred; no reliable DOM selector"
+  },
+
+  "fallbacks": {
+    "image": "meta[property='og:image']",
+    "name": "meta[property='og:title']",
+    "url": "location.href (strip ?variant=)"
+  },
+
+  "cookieBanner": {
+    "accept": [".ch2-allow-all-btn"],
+    "hide": ["#ch2-dialog", "#ch2-settings-dialog", ".ch2-container"]
+  },
+
+  "notes": [
+    "Image srcs are protocol-relative (//us.brandymelville.com/...) - prepend https:.",
+    "URL pattern: https://us.brandymelville.com/products/{slug} - variant param optional, strip it for the canonical product URL.",
+    "No category/breadcrumb in DOM or JSON-LD: type must come from name keywords."
+  ]
+}

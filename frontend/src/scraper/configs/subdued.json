@@ -1,0 +1,39 @@
+{
+  "site": "subdued",
+  "brand": "Subdued",
+  "matchHosts": ["us.subdued.com"],
+
+  "catalog": { "kind": "shopify" },
+
+  "isProductPage": {
+    "urlPattern": "/products/",
+    "jsonLdType": "Product"
+  },
+
+  "jsonLd": {
+    "use": false,
+    "type": "Product",
+    "notes": "VERIFIED 2026-10: product pages ship exactly two ld+json blocks - Organization and ProductGroup (with hasVariant[]; variant names carry color/size suffixes, e.g. 'Lace tank top - 1C4 - BLUE WOOD GREEN / 4 / S-M'). No top-level @type Product block, so parseJsonLd never matches; CSS selectors below are the real source. og:title is the clean product name."
+  },
+
+  "selectors": {
+    "productUrl": "link[rel=canonical]",
+    "name": "h1.product__title",
+    "image": ".media img",
+    "type": null,
+    "price": ".price__regular"
+  },
+
+  "fallbacks": {
+    "image": "meta[property='og:image']",
+    "name": "meta[property='og:title']",
+    "url": "location.href (strip ?variant=)"
+  },
+
+  "notes": [
+    "Shopify store (shop id 64456720480) - /products.json and /collections/{handle} work for catalog fetches; curl works fine, no bot protection.",
+    "Image srcs are protocol-relative (//us.subdued.com/cdn/shop/files/...) - prepend https:. Gallery imgs sit in .media containers (.media--portrait main, .media--thumb thumbnails); og:image is the main image.",
+    "Breadcrumb is just 'Home / {product}' - no category in DOM or JSON-LD (ProductGroup.category exists but parseJsonLd can't reach it). Type must come from name keywords via TYPE_MAP.",
+    "No cookie banner observed in server HTML (2026-10)."
+  ]
+}

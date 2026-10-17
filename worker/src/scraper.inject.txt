@@ -1,0 +1,497 @@
+(function() {
+	//#endregion
+	//#region src/scraper/catalog.ts
+	var SITE_CONFIGS = [{
+		site: "brandy-melville",
+		brand: "Brandy Melville",
+		matchHosts: ["us.brandymelville.com", "brandymelvilleusa.com"],
+		catalog: { "kind": "shopify" },
+		isProductPage: {
+			"urlPattern": "/products/",
+			"jsonLdType": "Product"
+		},
+		jsonLd: {
+			"use": true,
+			"type": "Product",
+			"notes": "VERIFIED 2026-10: product pages ship one application/ld+json block with @type Product. Fields: name, url, image (array, first = main), brand.name, offers[] (price, priceCurrency, availability). No category field - derive type from name keywords (see scraper.js TYPE_MAP)."
+		},
+		selectors: {
+			"productUrl": "link[rel=canonical]",
+			"name": "h1.product__title",
+			"image": ".product__media img",
+			"type": null,
+			"price": "JSON-LD offers[0].price preferred; no reliable DOM selector"
+		},
+		fallbacks: {
+			"image": "meta[property='og:image']",
+			"name": "meta[property='og:title']",
+			"url": "location.href (strip ?variant=)"
+		},
+		cookieBanner: {
+			"accept": [".ch2-allow-all-btn"],
+			"hide": [
+				"#ch2-dialog",
+				"#ch2-settings-dialog",
+				".ch2-container"
+			]
+		},
+		notes: [
+			"Image srcs are protocol-relative (//us.brandymelville.com/...) - prepend https:.",
+			"URL pattern: https://us.brandymelville.com/products/{slug} - variant param optional, strip it for the canonical product URL.",
+			"No category/breadcrumb in DOM or JSON-LD: type must come from name keywords."
+		]
+	}, {
+		site: "subdued",
+		brand: "Subdued",
+		matchHosts: ["us.subdued.com"],
+		catalog: { "kind": "shopify" },
+		isProductPage: {
+			"urlPattern": "/products/",
+			"jsonLdType": "Product"
+		},
+		jsonLd: {
+			"use": false,
+			"type": "Product",
+			"notes": "VERIFIED 2026-10: product pages ship exactly two ld+json blocks - Organization and ProductGroup (with hasVariant[]; variant names carry color/size suffixes, e.g. 'Lace tank top - 1C4 - BLUE WOOD GREEN / 4 / S-M'). No top-level @type Product block, so parseJsonLd never matches; CSS selectors below are the real source. og:title is the clean product name."
+		},
+		selectors: {
+			"productUrl": "link[rel=canonical]",
+			"name": "h1.product__title",
+			"image": ".media img",
+			"type": null,
+			"price": ".price__regular"
+		},
+		fallbacks: {
+			"image": "meta[property='og:image']",
+			"name": "meta[property='og:title']",
+			"url": "location.href (strip ?variant=)"
+		},
+		notes: [
+			"Shopify store (shop id 64456720480) - /products.json and /collections/{handle} work for catalog fetches; curl works fine, no bot protection.",
+			"Image srcs are protocol-relative (//us.subdued.com/cdn/shop/files/...) - prepend https:. Gallery imgs sit in .media containers (.media--portrait main, .media--thumb thumbnails); og:image is the main image.",
+			"Breadcrumb is just 'Home / {product}' - no category in DOM or JSON-LD (ProductGroup.category exists but parseJsonLd can't reach it). Type must come from name keywords via TYPE_MAP.",
+			"No cookie banner observed in server HTML (2026-10)."
+		]
+	}];
+	//#endregion
+	//#region src/scraper/scraper.ts
+	var SCRAPER_SOURCE = "store-scraper";
+	var GENERIC_BANNER_ACCEPT = [
+		"#onetrust-accept-btn-handler",
+		"#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+		".osano-cm-accept-all",
+		".cky-btn-accept",
+		".iubenda-cs-accept-btn",
+		"[data-cookiescript='accept']",
+		".gdpr-cookie-accept",
+		"#cookie-action-ok"
+	];
+	var GENERIC_BANNER_HIDE = [
+		"#onetrust-banner-sdk",
+		"#onetrust-consent-sdk",
+		"#CybotCookiebotDialog",
+		"#CybotCookiebotDialogBodyUnderlay",
+		".osano-cm-window",
+		".cky-consent-container",
+		".iubenda-cs-banner",
+		".cookie-banner",
+		".cookie-consent",
+		"#cookie-banner",
+		"#cookie-consent"
+	];
+	var TYPE_MAP = {
+		top: [
+			"top",
+			"tee",
+			"t-shirt",
+			"shirt",
+			"blouse",
+			"sweater",
+			"hoodie",
+			"tank",
+			"crop",
+			"pullover",
+			"sweatshirt",
+			"button-up",
+			"polo"
+		],
+		bottom: [
+			"pants",
+			"jeans",
+			"skirt",
+			"shorts",
+			"sweatpant",
+			"legging",
+			"trouser",
+			"cargo"
+		],
+		hat: [
+			"hat",
+			"beanie",
+			"cap",
+			"bucket"
+		],
+		dress: [
+			"dress",
+			"gown",
+			"romper",
+			"jumpsuit"
+		],
+		jacket: [
+			"jacket",
+			"coat",
+			"cardigan",
+			"blazer",
+			"puffer",
+			"parka",
+			"bomber",
+			"windbreaker"
+		]
+	};
+	var HIGHLIGHT_CLASS = "store-scraper-highlight";
+	function classifyType(text) {
+		const lower = text.toLowerCase();
+		for (const [type, values] of Object.entries(TYPE_MAP)) if (values.some((k) => lower.includes(k))) return type;
+		return null;
+	}
+	var HIGHLIGHT_STYLE = `
+.${HIGHLIGHT_CLASS} {
+  outline: 3px solid #00c853 !important;
+  outline-offset: 2px !important;
+  cursor: pointer !important;
+}
+.${HIGHLIGHT_CLASS}:hover { outline-color: #ff3b30 !important; }
+.store-scraper-parent { position: relative !important; }
+/* Host span: site CSS may still out-specify us even with !important, so the
+   button itself lives in a shadow root where page styles can't reach it.
+   The host only needs pinning to the image container's top-right corner. */
+.store-scraper-save-host {
+  position: absolute !important;
+  top: 6px !important;
+  right: 6px !important;
+  left: auto !important;
+  bottom: auto !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  display: block !important;
+  z-index: 2147483647 !important;
+}
+`;
+	var SAVE_BUTTON_STYLE = `
+button {
+  display: inline-block;
+  width: auto;
+  height: auto;
+  padding: 3px 8px;
+  background: #f4eee0;
+  color: #3f3830;
+  border: 1px solid #3f3830;
+  border-radius: 0;
+  font: 600 10px/1.2 InterVariable, Inter, system-ui, sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+button:hover {
+  background: #3f3830;
+  color: #f4eee0;
+}
+`;
+	var StoreScraper = class {
+		doc;
+		config;
+		getHref;
+		navObserver = null;
+		navTimer = null;
+		origPush = null;
+		origReplace = null;
+		onNav;
+		onImageClick;
+		styleEl = null;
+		bannerStyleEl = null;
+		constructor(doc, config, opts = {}) {
+			this.doc = doc;
+			this.config = config;
+			this.getHref = opts.getHref ?? (() => location.href);
+			this.onNav = () => {
+				if (this.navTimer) clearTimeout(this.navTimer);
+				this.navTimer = setTimeout(() => this.onPageSettled(), 300);
+			};
+			this.onImageClick = (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				this.scrape(e.currentTarget);
+			};
+		}
+		scrape(img) {
+			const product = this.extractProduct(img.currentSrc || img.src);
+			if (product) (this.doc.defaultView?.parent ?? window).postMessage({
+				source: SCRAPER_SOURCE,
+				product
+			}, "*");
+		}
+		static configForHost(host, configs) {
+			return configs.find((c) => c.matchHosts.some((k) => host === k || host.endsWith("." + k))) ?? null;
+		}
+		init() {
+			this.injectStyles();
+			this.origPush = this.doc.defaultView?.history.pushState.bind(this.doc.defaultView.history) ?? null;
+			this.origReplace = this.doc.defaultView?.history.replaceState.bind(this.doc.defaultView.history) ?? null;
+			if (this.origPush) this.doc.defaultView.history.pushState = ((orig, ...args) => {
+				orig(...args);
+				this.onNav();
+			});
+			if (this.origReplace) this.doc.defaultView.history.replaceState = ((orig, ...args) => {
+				orig(...args);
+				this.onNav();
+			});
+			this.doc.defaultView?.addEventListener("popstate", this.onNav);
+			this.navObserver = new MutationObserver(this.onNav);
+			this.navObserver.observe(this.doc.body, {
+				childList: true,
+				subtree: true
+			});
+			this.onPageSettled();
+		}
+		destroy() {
+			this.clearHighlights();
+			this.styleEl?.remove();
+			this.styleEl = null;
+			this.bannerStyleEl?.remove();
+			this.bannerStyleEl = null;
+			this.navObserver?.disconnect();
+			this.navObserver = null;
+			if (this.navTimer) clearTimeout(this.navTimer);
+			const view = this.doc.defaultView;
+			if (view) {
+				if (this.origPush) view.history.pushState = this.origPush;
+				if (this.origReplace) view.history.replaceState = this.origReplace;
+				view.removeEventListener("popstate", this.onNav);
+			}
+		}
+		onPageSettled() {
+			this.killCookieBanner();
+			if (this.detectProductPage()) this.highlightImages();
+			else this.clearHighlights();
+		}
+		killCookieBanner() {
+			const hide = [...GENERIC_BANNER_HIDE, ...this.config.cookieBanner?.hide ?? []];
+			if (!this.bannerStyleEl) {
+				this.bannerStyleEl = this.doc.createElement("style");
+				this.doc.head.appendChild(this.bannerStyleEl);
+			}
+			this.bannerStyleEl.textContent = hide.map((s) => `${s}{display:none!important}`).join("\n");
+			const accept = [...GENERIC_BANNER_ACCEPT, ...this.config.cookieBanner?.accept ?? []];
+			for (const sel of accept) for (const el of this.doc.querySelectorAll(sel)) el.click();
+		}
+		detectProductPage() {
+			if (!new URL(this.getHref()).pathname.includes(this.config.isProductPage.urlPattern)) return false;
+			return this.parseJsonLd() !== null || this.doc.querySelector(this.config.selectors.name ?? "") !== null;
+		}
+		injectStyles() {
+			if (this.styleEl) return;
+			this.styleEl = this.doc.createElement("style");
+			this.styleEl.textContent = HIGHLIGHT_STYLE;
+			this.doc.head.appendChild(this.styleEl);
+		}
+		highlightImages() {
+			this.clearHighlights();
+			const sel = this.config.selectors.image;
+			if (!sel) return;
+			for (const img of this.doc.querySelectorAll(sel)) {
+				if (!img.currentSrc && !img.src) continue;
+				img.classList.add(HIGHLIGHT_CLASS);
+				img.addEventListener("click", this.onImageClick);
+				const parent = img.parentElement;
+				if (parent) {
+					parent.classList.add("store-scraper-parent");
+					const host = this.doc.createElement("span");
+					host.className = "store-scraper-save-host";
+					const shadow = host.attachShadow({ mode: "open" });
+					const style = this.doc.createElement("style");
+					style.textContent = SAVE_BUTTON_STYLE;
+					shadow.appendChild(style);
+					const btn = this.doc.createElement("button");
+					btn.type = "button";
+					btn.textContent = "+ Save";
+					btn.addEventListener("click", (e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						btn.textContent = "✓ Saved";
+						setTimeout(() => {
+							btn.textContent = "+ Save";
+						}, 1500);
+						this.scrape(img);
+					});
+					shadow.appendChild(btn);
+					parent.appendChild(host);
+				}
+			}
+		}
+		clearHighlights() {
+			for (const img of this.doc.querySelectorAll("." + HIGHLIGHT_CLASS)) {
+				img.classList.remove(HIGHLIGHT_CLASS);
+				img.removeEventListener("click", this.onImageClick);
+				img.parentElement?.classList.remove("store-scraper-parent");
+			}
+			for (const btn of this.doc.querySelectorAll(".store-scraper-save-host")) btn.remove();
+		}
+		extractProduct(pickedImage) {
+			const ld = this.parseJsonLd();
+			let url = ld && typeof ld.url === "string" ? ld.url : null;
+			let image = pickedImage ?? (ld && typeof ld.image === "string" ? ld.image : Array.isArray(ld?.image) ? ld.image[0] : null);
+			let name = ld && typeof ld.name === "string" ? ld.name : null;
+			let brand = ld?.brand && typeof ld.brand === "object" && "name" in ld.brand ? String(ld.brand.name) : typeof ld?.brand === "string" ? ld.brand : null;
+			if (!name) name = this.pick("name", false);
+			if (!image) image = this.pick("image", true);
+			if (!url) {
+				url = this.doc.querySelector("link[rel=\"canonical\"]")?.getAttribute("href") ?? this.getHref();
+				try {
+					const u = new URL(url);
+					u.search = "";
+					url = u.href;
+				} catch {}
+			}
+			const type = this.typeFromText([name, this.pick("type", false)].filter(Boolean).join(" "));
+			if (type === null) return null;
+			if (!url && !image && !name) return null;
+			return {
+				url,
+				image,
+				name,
+				type,
+				brand: brand ?? this.config.brand
+			};
+		}
+		pick(field, isImg) {
+			const sel = this.config.selectors[field === "type" ? "type" : field === "image" ? "image" : "name"];
+			const fbKey = field === "image" ? "image" : field === "name" ? "name" : null;
+			const fb = fbKey ? this.config.fallbacks?.[fbKey] : void 0;
+			if (sel) {
+				const v = this.fromSelector(sel, isImg);
+				if (v) return v;
+			}
+			return fb ? this.fromSelector(fb, isImg) : null;
+		}
+		parseJsonLd() {
+			const scripts = this.doc.querySelectorAll("script[type=\"application/ld+json\"]");
+			const want = this.config.jsonLd.type;
+			for (const s of scripts) {
+				let data;
+				try {
+					data = JSON.parse(s.textContent ?? "");
+				} catch {
+					continue;
+				}
+				if (typeof data !== "object" || data === null) continue;
+				const obj = data;
+				if ((Array.isArray(obj["@type"]) ? obj["@type"] : [obj["@type"]]).includes(want)) return obj;
+			}
+			return null;
+		}
+		fromSelector(selector, isImg) {
+			const el = this.doc.querySelector(selector);
+			if (!el) return null;
+			if (isImg || el.tagName === "IMG") {
+				const src = el.getAttribute("src") ?? el.getAttribute("content");
+				if (!src) return null;
+				return this.absUrl(src);
+			}
+			const text = el.textContent?.trim();
+			return text ? text : null;
+		}
+		typeFromText(text) {
+			return classifyType(text);
+		}
+		absUrl(src) {
+			if (src.startsWith("//")) return "https:" + src;
+			try {
+				return new URL(src, this.getHref()).href;
+			} catch {
+				return src;
+			}
+		}
+		selfCheck() {
+			const sample = JSON.stringify({
+				"@type": "Product",
+				name: "Tina Top",
+				url: "https://us.brandymelville.com/products/tina-top",
+				image: ["https://us.brandymelville.com/media/tina-top.jpg"],
+				brand: {
+					"@type": "Brand",
+					name: "Brandy Melville"
+				},
+				offers: [{
+					price: "13.00",
+					priceCurrency: "USD"
+				}]
+			});
+			const script = this.doc.createElement("script");
+			script.type = "application/ld+json";
+			script.textContent = sample;
+			this.doc.head.appendChild(script);
+			const p = this.extractProduct();
+			script.remove();
+			const ok = p?.name === "Tina Top" && p.image?.startsWith("https://") === true && p.brand === "Brandy Melville" && p.type === "top";
+			if (!ok) console.error("scraper selfCheck FAILED", p);
+			return ok;
+		}
+	};
+	//#endregion
+	//#region src/scraper/inject-entry.ts
+	function storeHref() {
+		if (location.pathname === "/p") {
+			const u = new URL(location.href).searchParams.get("u");
+			if (u) return u;
+		}
+		return location.href;
+	}
+	var origPush = history.pushState.bind(history);
+	var origReplace = history.replaceState.bind(history);
+	function proxied(u) {
+		if (u == null) return void 0;
+		try {
+			const abs = new URL(String(u), storeHref());
+			if (abs.origin === location.origin && abs.pathname !== "/p") return `${location.origin}/p?u=${encodeURIComponent(abs.href)}`;
+			return String(u);
+		} catch {
+			return u;
+		}
+	}
+	history.pushState = ((s, t, u) => origPush(s, t, proxied(u)));
+	history.replaceState = ((s, t, u) => origReplace(s, t, proxied(u)));
+	var config = StoreScraper.configForHost(new URL(storeHref()).host, SITE_CONFIGS);
+	if (config) {
+		new StoreScraper(document, config, { getHref: storeHref }).init();
+		(window.parent ?? window).postMessage({
+			source: "scraper-status",
+			page: storeHref(),
+			productPage: new URL(storeHref()).pathname.includes(config.isProductPage.urlPattern)
+		}, "*");
+	} else (window.parent ?? window).postMessage({
+		source: "scraper-status",
+		page: storeHref(),
+		productPage: false,
+		noConfig: true
+	}, "*");
+	window.addEventListener("message", (e) => {
+		const d = e.data;
+		if (d?.source !== "scrape-saved" || !d.image) return;
+		const target = [...document.querySelectorAll("img")].find((i) => (i.currentSrc || i.src) === d.image);
+		if (!target) return;
+		const prev = target.style.outlineColor;
+		target.style.outlineColor = "#1e90ff";
+		setTimeout(() => {
+			target.style.outlineColor = prev;
+		}, 600);
+	});
+	//#endregion
+})();
