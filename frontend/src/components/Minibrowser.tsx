@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Check } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { onScrapedProduct, type ScrapedProduct } from '@/scraper/scraper'
 import { saveProduct, type SaveResult } from '@/scraper/save'
 import type { SiteConfig } from '@/scraper/scraper'
-import type { useWardrobe } from '@/hooks/useWardrobe'
-
-type Wardrobe = ReturnType<typeof useWardrobe>
+import type { Wardrobe } from '@/hooks/useWardrobe'
+import { IconButton } from '@/components/kit/buttons'
+import { StatusChip, Toast, useToast } from '@/components/kit/feedback'
 
 // Worker proxy origin. Dev default '' keeps the iframe on the Vite dev
 // server, whose /p rule forwards to wrangler (vite.config.js → server.proxy).
@@ -23,13 +23,14 @@ export default function Minibrowser({
   config,
   wardrobe,
   onClose,
+  onSaved,
 }: {
   config: SiteConfig
   wardrobe: Wardrobe
   onClose?: () => void
+  onSaved?: (name: string) => void
 }) {
-  const [msg, setMsg] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
+  const { toast, show } = useToast(2500)
   const [scraperStatus, setScraperStatus] = useState<
     { page: string; productPage: boolean; noConfig?: boolean } | null
   >(null)
@@ -37,10 +38,37 @@ export default function Minibrowser({
   const [startUrl] = useState(`https://${config.matchHosts[0]}`)
   // If the injected scraper never reports in, the page escaped the proxy.
   const [timedOut, setTimedOut] = useState(false)
+
   useEffect(() => {
     const t = setTimeout(() => setTimedOut(true), 4000)
     return () => clearTimeout(t)
   }, [])
+
+  // A product click arrived from the injected scraper — save it and tell the
+  // iframe the save went through (that's what flashes the image blue).
+  // ponytail: hoisted to a named function so the message listener below stays
+  // a thin wrapper; also means the save logic is easy to read on its own.
+  async function handleProduct(product: ScrapedProduct, reply: (msg: object) => void) {
+    if (!product.type) {
+      show("Couldn't identify the item type — skipped.")
+      return
+    }
+    const result: SaveResult = await saveProduct(product, {
+      clothing: wardrobe.clothing,
+      addClothing: wardrobe.addClothing,
+      setInCart: wardrobe.setInCart,
+      brand: config.brand,
+    })
+    // Success feedback is the app-level toast (with a View action) — a
+    // second toast here would sit exactly on top of it. This one covers
+    // the non-save outcomes.
+    if (result === 'exists') {
+      show('Already in wardrobe')
+    } else {
+      onSaved?.(product.name ?? 'item')
+    }
+    reply({ source: 'scrape-saved', image: product.image })
+  }
 
   useEffect(() => {
     function onMessage(e: MessageEvent) {
@@ -58,25 +86,12 @@ export default function Minibrowser({
       // Only trust save requests from the proxy origin.
       if (PROXY_URL.startsWith('http') && e.origin !== new URL(PROXY_URL).origin) return
       onScrapedProduct(e, async (product: ScrapedProduct) => {
-        if (!product.type) {
-          setMsg("Couldn't identify the item type — skipped.")
-          setSaved(false)
-          setTimeout(() => setMsg(null), 2500)
-          return
-        }
-        const result: SaveResult = await saveProduct(product, {
-          ...wardrobe,
-          brand: config.brand,
-        })
-        setMsg(result === 'exists' ? 'Already in wardrobe' : `Saved — ${product.name}`)
-        setSaved(result !== 'exists')
-        e.source?.postMessage({ source: 'scrape-saved', image: product.image }, { targetOrigin: '*' })
-        setTimeout(() => setMsg(null), 2500)
+        await handleProduct(product, (msg) => e.source?.postMessage(msg, { targetOrigin: '*' }))
       })
     }
     addEventListener('message', onMessage)
     return () => removeEventListener('message', onMessage)
-  }, [wardrobe, config])
+  }, [wardrobe, config, onSaved, show])
 
   const frame = (
     <iframe
@@ -86,69 +101,47 @@ export default function Minibrowser({
     />
   )
 
-  const chip = (
-    <ScraperChip status={scraperStatus} timedOut={timedOut} />
-  )
+  // The status chip under the iframe. Previously a 4-level ternary — written
+  // out as if/else here so the order of checks is easy to follow.
+  let chipText: string | null = null
+  if (scraperStatus === null) {
+    if (timedOut) {
+      chipText = 'Scraper not detected — the page may have left the proxy'
+    }
+  } else if (scraperStatus.noConfig) {
+    chipText = 'No scraper config for this site'
+  } else if (scraperStatus.productPage) {
+    chipText = 'Scraper live · product page — tap + Save on an image'
+  } else {
+    chipText = 'Scraper live · not a product page — open a product to save'
+  }
+
+  const chip = chipText && <StatusChip>{chipText}</StatusChip>
 
   if (!onClose) {
     // Embedded mode (Shop tab): fills the parent's remaining height.
-      return (
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden border border-border">
-          {frame}
-          {chip}
-          {msg && <Toast msg={msg} saved={saved} />}
-        </div>
-      )
+    return (
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden border border-border">
+        {frame}
+        {chip}
+        {toast && <Toast toast={toast} variant="dark" />}
+      </div>
+    )
   }
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
       <header className="flex items-center gap-3 border-b border-border px-4 py-3">
-        <button onClick={onClose} className="p-1.5 hover:bg-muted" aria-label="Close browser">
+        <IconButton size="sm" tone="fill" onClick={onClose} aria-label="Close browser">
           <ArrowLeft className="size-5" />
-        </button>
+        </IconButton>
         <span className="truncate text-sm text-muted-foreground">{config.matchHosts[0]}</span>
       </header>
       <div className="relative flex flex-1 flex-col overflow-hidden">
         {frame}
         {chip}
       </div>
-      {msg && <Toast msg={msg} saved={saved} />}
-    </div>
-  )
-}
-
-// Tiny status pill over the frame: confirms the injected scraper is alive and
-// explains why nothing is highlighted when it isn't.
-function ScraperChip({
-  status,
-  timedOut,
-}: {
-  status: { page: string; productPage: boolean; noConfig?: boolean } | null
-  timedOut: boolean
-}) {
-  const text = !status
-    ? timedOut
-      ? 'Scraper not detected — the page may have left the proxy'
-      : null
-    : status.noConfig
-      ? 'No scraper config for this site'
-      : status.productPage
-        ? 'Scraper live · product page — tap + Save on an image'
-        : 'Scraper live · not a product page — open a product to save'
-  if (!text) return null
-  return (
-    <div className="pointer-events-none absolute bottom-3 left-3 z-10 bg-foreground/85 px-3 py-1.5 text-[11px] tracking-wide text-background shadow">
-      {text}
-    </div>
-  )
-}
-
-function Toast({ msg, saved }: { msg: string; saved?: boolean }) {
-  return (
-    <div className="fixed bottom-24 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 bg-foreground px-5 py-2.5 text-xs tracking-wide text-background shadow-lg md:bottom-8">
-      {saved && <Check className="size-3.5 text-[#00c853]" aria-hidden />}
-      {msg}
+      {toast && <Toast toast={toast} variant="dark" />}
     </div>
   )
 }

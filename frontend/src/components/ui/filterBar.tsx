@@ -1,9 +1,10 @@
 // Search input + filter popover — the Wardrobe's clothing filter bar, shared
 // with Try-On so the two stay identical.
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { IconButton } from '@/components/kit/buttons'
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from '@/components/ui/command'
@@ -34,7 +35,18 @@ export function ClothingFilterBar({
 
   return (
     <div className="flex items-center gap-2">
-      <Input placeholder="Search by name" value={query} onChange={(e) => onQuery(e.target.value)} />
+      <div className="relative flex-1">
+        <Input placeholder="Search by name" value={query} onChange={(e) => onQuery(e.target.value)} className="pr-9" />
+        {query && (
+          <IconButton
+            aria-label="Clear search"
+            onClick={() => onQuery('')}
+            className="absolute top-1/2 right-2 -translate-y-1/2"
+          >
+            <X className="size-4" />
+          </IconButton>
+        )}
+      </div>
       {showFilters && (
         <Popover>
           <PopoverTrigger
@@ -50,17 +62,19 @@ export function ClothingFilterBar({
               <CommandInput placeholder="Filter options…" />
               <CommandList>
                 <CommandEmpty>No options.</CommandEmpty>
-                <CommandGroup heading="Type">
-                  {types.map((v) => (
-                    <CommandItem
-                      key={v}
-                      data-checked={filters.types.has(v)}
-                      onSelect={() => toggle('types', v)}
-                    >
-                      {v}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
+                {types.length > 0 && (
+                  <CommandGroup heading="Type">
+                    {types.map((v) => (
+                      <CommandItem
+                        key={v}
+                        data-checked={filters.types.has(v)}
+                        onSelect={() => toggle('types', v)}
+                      >
+                        {v}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                )}
                 {brands.length > 0 && (
                   <CommandGroup heading="Brand">
                     {brands.map((v) => (

@@ -2,7 +2,8 @@
 // Used by the Wardrobe tab, the outfit slot picker and the Try-On picker.
 import type { Clothing } from '@/types'
 import { cn } from '@/lib/utils'
-import { pillBase, pillActive, pillInactive, labelCls } from '@/lib/ui'
+import { FieldLabel } from '@/components/kit/fields'
+import { pillBase, pillActive, pillInactive } from '@/components/kit/tabs'
 
 // The item's product-URL host — "birkenstock.com" etc. Empty for manual items.
 export function marketplaceOf(c: Clothing): string {
@@ -53,7 +54,7 @@ export function FilterPillRow({
   if (values.length === 0) return null
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-      <span className={labelCls}>{label}</span>
+      <FieldLabel>{label}</FieldLabel>
       {values.map((v) => (
         <button
           key={v}

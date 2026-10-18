@@ -60,6 +60,11 @@ const GENERIC_BANNER_ACCEPT = [
   "[data-cookiescript='accept']",
   ".gdpr-cookie-accept",
   "#cookie-action-ok",
+  // Shopify's own privacy & compliance banner (default on most Shopify themes)
+  "#shopify-pc__banner__btn-accept",
+  ".klaro .cm-btn-accept-all",
+  "#cmplz-accept-all",
+  "#BorlabsCookieBox .brlbs-btn-accept-all",
 ];
 const GENERIC_BANNER_HIDE = [
   "#onetrust-banner-sdk",
@@ -73,6 +78,15 @@ const GENERIC_BANNER_HIDE = [
   ".cookie-consent",
   "#cookie-banner",
   "#cookie-consent",
+  "#shopify-pc__banner",
+  "#shopify-pc__dialog",
+  "#shopify-pc__prefs-dialog",
+  // CMPs that render into a shadow root — hiding the host covers everything
+  "#usercentrics-root",
+  "#klaro",
+  "#tarteaucitronRoot",
+  "#cmplz-cookiebanner-container",
+  "#BorlabsCookieBox",
 ];
 
 // Map clothing keywords -> OutfitSlot types (frontend/src/types.ts). Keys are
@@ -158,6 +172,9 @@ export class StoreScraper {
   // store URL is in the query string, not location — inject-entry passes a
   // getter that unwraps it; plain iframes use the location.href default.
   private getHref: () => string;
+  // The window the document belongs to. Set in init(); lets init/destroy
+  // talk about "the window" without ?? and ! everywhere.
+  private view: Window | null = null;
   private navObserver: MutationObserver | null = null;
   private navTimer: ReturnType<typeof setTimeout> | null = null;
   private origPush: typeof history.pushState | null = null;
@@ -181,6 +198,8 @@ export class StoreScraper {
     this.onImageClick = (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      // currentTarget is the element the listener is attached to — we only
+      // ever attach this listener to <img> elements, hence the type below.
       this.scrape(e.currentTarget as HTMLImageElement);
     };
   }
@@ -190,40 +209,45 @@ export class StoreScraper {
   private scrape(img: HTMLImageElement) {
     const product = this.extractProduct(img.currentSrc || img.src);
     if (product) {
-      (this.doc.defaultView?.parent ?? window).postMessage(
-        { source: SCRAPER_SOURCE, product } satisfies ScraperMessage,
-        "*",
-      );
+      const message: ScraperMessage = { source: SCRAPER_SOURCE, product };
+      (this.doc.defaultView?.parent ?? window).postMessage(message, "*");
     }
   }
 
   static configForHost(host: string, configs: SiteConfig[]): SiteConfig | null {
     // matchHosts are exact hostnames — require a real match, not substring.
-    return configs.find(c => c.matchHosts.some(k => host === k || host.endsWith("." + k))) ?? null;
+    for (const config of configs) {
+      for (const matchHost of config.matchHosts) {
+        if (host === matchHost || host.endsWith("." + matchHost)) return config;
+      }
+    }
+    return null;
   }
 
   // --- Lifecycle ------------------------------------------------------------
 
   init() {
+    const view = this.doc.defaultView;
+    if (!view) return; // no window (detached document) — can't hook anything
+
     this.injectStyles();
 
     // SPA nav hooking: patch history + watch for re-renders, then re-run
     // detect/extract/highlight after each settled navigation.
-    this.origPush = this.doc.defaultView?.history.pushState.bind(this.doc.defaultView.history) ?? null;
-    this.origReplace = this.doc.defaultView?.history.replaceState.bind(this.doc.defaultView.history) ?? null;
-    if (this.origPush) {
-      this.doc.defaultView!.history.pushState = ((orig, ...args) => {
-        orig(...args);
-        this.onNav();
-      }) as typeof history.pushState;
-    }
-    if (this.origReplace) {
-      this.doc.defaultView!.history.replaceState = ((orig, ...args) => {
-        orig(...args);
-        this.onNav();
-      }) as typeof history.replaceState;
-    }
-    this.doc.defaultView?.addEventListener("popstate", this.onNav);
+    this.view = view;
+    const origPush = view.history.pushState.bind(view.history);
+    const origReplace = view.history.replaceState.bind(view.history);
+    this.origPush = origPush;
+    this.origReplace = origReplace;
+    view.history.pushState = (...args) => {
+      origPush(...args);
+      this.onNav();
+    };
+    view.history.replaceState = (...args) => {
+      origReplace(...args);
+      this.onNav();
+    };
+    view.addEventListener("popstate", this.onNav);
 
     this.navObserver = new MutationObserver(this.onNav);
     this.navObserver.observe(this.doc.body, { childList: true, subtree: true });
@@ -240,7 +264,7 @@ export class StoreScraper {
     this.navObserver?.disconnect();
     this.navObserver = null;
     if (this.navTimer) clearTimeout(this.navTimer);
-    const view = this.doc.defaultView;
+    const view = this.view;
     if (view) {
       if (this.origPush) view.history.pushState = this.origPush;
       if (this.origReplace) view.history.replaceState = this.origReplace;
@@ -273,8 +297,13 @@ export class StoreScraper {
   detectProductPage(): boolean {
     // URL pattern alone false-positives on 404s/redirects — require actual
     // product data (JSON-LD or the name selector) too.
-    if (!new URL(this.getHref()).pathname.includes(this.config.isProductPage.urlPattern)) return false;
-    return this.parseJsonLd() !== null || this.doc.querySelector(this.config.selectors.name ?? "") !== null;
+    const pageUrl = new URL(this.getHref());
+    if (!pageUrl.pathname.includes(this.config.isProductPage.urlPattern)) return false;
+    const nameSelector = this.config.selectors.name;
+    if (nameSelector) {
+      if (this.doc.querySelector(nameSelector) !== null) return true;
+    }
+    return this.parseJsonLd() !== null;
   }
 
   // --- Highlighting ---------------------------------------------------------
@@ -301,29 +330,38 @@ export class StoreScraper {
       const parent = img.parentElement;
       if (parent) {
         parent.classList.add("store-scraper-parent");
-        const host = this.doc.createElement("span");
-        host.className = "store-scraper-save-host";
-        const shadow = host.attachShadow({ mode: "open" });
-        const style = this.doc.createElement("style");
-        style.textContent = SAVE_BUTTON_STYLE;
-        shadow.appendChild(style);
-        const btn = this.doc.createElement("button");
-        btn.type = "button";
-        btn.textContent = "+ Save";
-        btn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          // Immediate in-frame feedback: flip the button label briefly.
-          btn.textContent = "✓ Saved";
-          setTimeout(() => {
-            btn.textContent = "+ Save";
-          }, 1500);
-          this.scrape(img);
-        });
-        shadow.appendChild(btn);
-        parent.appendChild(host);
+        this.addSaveButton(parent, img);
       }
     }
+  }
+
+  // Build the "+ Save" button that sits on top of one product image.
+  // It lives inside a shadow root so the store's own CSS can't touch it.
+  private addSaveButton(parent: HTMLElement, img: HTMLImageElement) {
+    const host = this.doc.createElement("span");
+    host.className = "store-scraper-save-host";
+    const shadow = host.attachShadow({ mode: "open" });
+
+    const style = this.doc.createElement("style");
+    style.textContent = SAVE_BUTTON_STYLE;
+    shadow.appendChild(style);
+
+    const btn = this.doc.createElement("button");
+    btn.type = "button";
+    btn.textContent = "+ Save";
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Immediate in-frame feedback: flip the button label briefly.
+      btn.textContent = "✓ Saved";
+      setTimeout(() => {
+        btn.textContent = "+ Save";
+      }, 1500);
+      this.scrape(img);
+    });
+    shadow.appendChild(btn);
+
+    parent.appendChild(host);
   }
 
   clearHighlights() {
@@ -343,16 +381,33 @@ export class StoreScraper {
     // 1. JSON-LD first (most stable, survives redesigns). BM fields: name,
     //    url, image (ARRAY — take [0]), brand.name. No category -> type null.
     const ld = this.parseJsonLd();
-    let url = ld && typeof ld.url === "string" ? ld.url : null;
-    let image =
-      pickedImage ??
-      (ld && typeof ld.image === "string" ? ld.image
-        : Array.isArray(ld?.image) ? ld.image[0] : null);
-    let name = ld && typeof ld.name === "string" ? ld.name : null;
-    let brand =
-      ld?.brand && typeof ld.brand === "object" && "name" in (ld.brand as object)
-        ? String((ld.brand as { name: unknown }).name)
-        : typeof ld?.brand === "string" ? ld.brand : null;
+
+    let url: string | null = null;
+    if (ld && typeof ld.url === "string") url = ld.url;
+
+    let image: string | null = null;
+    if (pickedImage) {
+      image = pickedImage;
+    } else if (ld) {
+      if (typeof ld.image === "string") {
+        image = ld.image;
+      } else if (Array.isArray(ld.image) && typeof ld.image[0] === "string") {
+        image = ld.image[0];
+      }
+    }
+
+    let name: string | null = null;
+    if (ld && typeof ld.name === "string") name = ld.name;
+
+    let brand: string | null = null;
+    if (ld) {
+      const rawBrand = ld.brand;
+      if (typeof rawBrand === "string") {
+        brand = rawBrand;
+      } else if (rawBrand && typeof rawBrand === "object" && "name" in rawBrand) {
+        brand = String((rawBrand as { name: unknown }).name);
+      }
+    }
 
     // 2. CSS selectors as fallback for anything JSON-LD missed.
     if (!name) name = this.pick("name", false);
@@ -364,7 +419,11 @@ export class StoreScraper {
     }
 
     // 3. Type: name + breadcrumb text through TYPE_MAP. null = rejected (shoes).
-    const type = this.typeFromText([name, this.pick("type", false)].filter(Boolean).join(" "));
+    const texts: string[] = [];
+    if (name) texts.push(name);
+    const breadcrumb = this.pick("type", false);
+    if (breadcrumb) texts.push(breadcrumb);
+    const type = this.typeFromText(texts.join(" "));
     if (type === null) return null; // no shoes / unclassifiable -> skip
 
     // 4. Contract shape; null only if nothing at all was extractable.
@@ -372,19 +431,24 @@ export class StoreScraper {
     return { url, image, name, type, brand: brand ?? this.config.brand };
   }
 
-  // Try config.selectors[field], then config.fallbacks[field]. isImg: return
-  // the src attribute (absolute-ized) instead of text.
+  // Look up a field using the config's selector, then its fallback selector.
+  // isImg: return the image src attribute (absolute-ized) instead of the
+  // element's text.
   private pick(field: "name" | "image" | "type", isImg: boolean): string | null {
-    const sel = this.config.selectors[field === "type" ? "type" : field === "image" ? "image" : "name"];
-    const fbKey = field === "image" ? "image" : field === "name" ? "name" : null;
-    const fb = fbKey ? this.config.fallbacks?.[fbKey] : undefined;
+    const sel = this.config.selectors[field];
     if (sel) {
       const v = this.fromSelector(sel, isImg);
       if (v) return v;
     }
-    return fb ? this.fromSelector(fb, isImg) : null;
+    // "type" has no fallback selector — only name/image do.
+    if (field === "type") return null;
+    const fb = this.config.fallbacks?.[field];
+    if (fb) return this.fromSelector(fb, isImg);
+    return null;
   }
 
+  // Find the JSON-LD block the config asks for (e.g. "@type": "Product").
+  // Pages can have several; malformed ones are skipped, not fatal.
   private parseJsonLd(): Record<string, unknown> | null {
     const scripts = this.doc.querySelectorAll('script[type="application/ld+json"]');
     const want = this.config.jsonLd.type;
@@ -399,12 +463,15 @@ export class StoreScraper {
       if (typeof data !== "object" || data === null) continue;
 
       const obj = data as Record<string, unknown>;
-      const types = Array.isArray(obj["@type"]) ? obj["@type"] : [obj["@type"]];
+      // @type can be a single string ("Product") or a list of strings.
+      const rawType = obj["@type"];
+      const types: unknown[] = Array.isArray(rawType) ? rawType : [rawType];
       if (types.includes(want)) return obj;
     }
     return null;
   }
 
+  // Run a CSS selector and pull out either the image src or the text.
   private fromSelector(selector: string, isImg: boolean): string | null {
     const el = this.doc.querySelector(selector);
     if (!el) return null;
@@ -423,6 +490,7 @@ export class StoreScraper {
     return classifyType(text)
   }
 
+  // Make an image src absolute (e.g. "/media/x.jpg" -> full URL).
   private absUrl(src: string): string {
     if (src.startsWith("//")) return "https:" + src;
     try {
@@ -433,6 +501,7 @@ export class StoreScraper {
   }
 
   // --- Self-check (smallest thing that fails if parsing logic breaks) -------
+
   selfCheck(): boolean {
     // Trimmed copy of BM's real JSON-LD Product block shape.
     const sample = JSON.stringify({
@@ -465,6 +534,8 @@ export function onScrapedProduct(
   e: MessageEvent,
   onProduct: (p: ScrapedProduct) => void,
 ) {
+  // MessageEvent.data is untyped, so this cast states the shape we expect.
+  // The source check below is what actually proves it's our message.
   const d = e.data as ScraperMessage;
   if (d?.source === SCRAPER_SOURCE) onProduct(d.product);
 }

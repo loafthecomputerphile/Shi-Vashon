@@ -1,19 +1,27 @@
-import { useRef, useState } from 'react'
-import { Camera, Trash2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import type { useWardrobe } from '@/hooks/useWardrobe'
-import { cn } from '@/lib/utils'
-import { inputCls, pillBase, pillActive, pillInactive, labelCls } from '@/lib/ui'
+import { useState } from 'react'
+import { Camera } from 'lucide-react'
+import type { Wardrobe } from '@/hooks/useWardrobe'
+import { fileToDataUrl } from '@/lib/file'
+import { Heading } from '@/components/kit/tiles'
+import { ConfirmButton } from '@/components/kit/buttons'
+import { FieldLabel, PasswordField, FilePickButton, SwatchPicker } from '@/components/kit/fields'
+import { DeletableImageThumb } from '@/components/kit/tiles'
 
-type Wardrobe = ReturnType<typeof useWardrobe>
-
-type Accent = (typeof ACCENTS)[number]
-
+// The four theme colors the user can pick. All theme styling lives in CSS.
 const ACCENTS = ['blush', 'lilac', 'sage', 'honey'] as const
+type Accent = (typeof ACCENTS)[number]
 
 const ACCENT_KEY = 'shiah-accent'
 const API_KEY_STORE = 'shiah-apikey'
 export { API_KEY_STORE }
+
+// Saved accents are just strings in localStorage, so check the value is one
+// we actually know before using it (otherwise fall back to the default).
+function loadAccent(): Accent {
+  const saved = localStorage.getItem(ACCENT_KEY)
+  const known = ACCENTS.find((a) => a === saved)
+  return known ?? 'blush'
+}
 
 // Light theme only — apply the accent to <html>. Called on load from App and on every change.
 export function applyTheme(accent: Accent) {
@@ -21,21 +29,16 @@ export function applyTheme(accent: Accent) {
 }
 
 export function initTheme() {
-  const accent = ((localStorage.getItem(ACCENT_KEY) as Accent) ?? 'blush') as Accent
-  applyTheme(accent)
+  applyTheme(loadAccent())
 }
 
 export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
   const [accent, setAccent] = useState<Accent>(loadAccent)
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(API_KEY_STORE) ?? '')
-  const [showKey, setShowKey] = useState(false)
-  const [confirmClear, setConfirmClear] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
-
-  function loadAccent(): Accent {
-    return ((localStorage.getItem(ACCENT_KEY) as Accent) ?? 'blush') as Accent
-  }
-  function chooseAccent(next: Accent) {
+  function chooseAccent(id: string) {
+    // SwatchPicker hands back a plain string id; only accept known accents.
+    const next = ACCENTS.find((a) => a === id)
+    if (next === undefined) return
     setAccent(next)
     localStorage.setItem(ACCENT_KEY, next)
     applyTheme(next)
@@ -46,107 +49,77 @@ export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
   }
 
   async function uploadPhoto(file: File) {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.onerror = () => reject(reader.error)
-      reader.readAsDataURL(file)
-    })
-    await wardrobe.addPhoto(dataUrl)
+    await wardrobe.addPhoto(await fileToDataUrl(file))
   }
 
   const section = 'mb-10'
-  const heading = cn(labelCls, 'mb-3')
+  const heading = 'mb-3'
 
   return (
     <section className="max-w-xl">
-      <h2 className="mb-8 font-heading text-3xl tracking-wide">Settings</h2>
+      <Heading level={1} className="mb-8">Settings</Heading>
 
       <div className={section}>
-        <h3 className={heading}>Accent</h3>
-        <div className="flex gap-2">
-          {ACCENTS.map((a) => (
-            <button
-              key={a}
-              aria-label={`Accent: ${a}`}
-              onClick={() => chooseAccent(a)}
-              className={cn(
-                'size-8 border border-border/60 outline-2 outline-offset-2 transition',
-                accent === a ? 'outline-foreground' : 'outline-transparent hover:outline-muted-foreground/50',
-              )}
-              style={{ background: `var(--accent-swatch-${a})` }}
-            />
-          ))}
-        </div>
+        <FieldLabel as="h3" className={heading}>Accent</FieldLabel>
+        <SwatchPicker
+          options={ACCENTS.map((a) => ({
+            id: a,
+            label: `Accent: ${a}`,
+            style: { background: `var(--accent-swatch-${a})` },
+          }))}
+          value={accent}
+          onChange={chooseAccent}
+        />
       </div>
 
       <div className={section}>
-        <h3 className={heading}>API key</h3>
+        <FieldLabel as="h3" className={heading}>API key</FieldLabel>
         <p className="mb-2 text-xs text-muted-foreground">
           OpenRouter key used for Try-On generation. Stored on this device only, in plain text.
         </p>
-        <div className="flex gap-2">
-          <input
-            className={cn(inputCls, 'flex-1')}
-            type={showKey ? 'text' : 'password'}
-            placeholder="sk-or-…"
-            value={apiKey}
-            onChange={(e) => saveKey(e.target.value)}
-          />
-          <Button variant="outline" size="sm" onClick={() => setShowKey((s) => !s)}>
-            {showKey ? 'Hide' : 'Show'}
-          </Button>
-        </div>
+        <PasswordField
+          value={apiKey}
+          onChange={saveKey}
+          placeholder="sk-or-…"
+        />
       </div>
 
       <div className={section}>
-        <h3 className={heading}>Body photos</h3>
+        <FieldLabel as="h3" className={heading}>Body photos</FieldLabel>
         <div className="flex flex-wrap gap-3">
           {wardrobe.photos.map((p) => (
-            <div key={p.id} className="group relative">
-              <img src={p.image} alt="Body photo" className="h-28 w-20 border border-border object-cover" />
-              <button
-                aria-label="Delete photo"
-                onClick={() => wardrobe.deletePhoto(p.id)}
-                className="absolute top-1 right-1 bg-background/80 p-1 opacity-0 transition-opacity group-hover:opacity-100"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
+            <DeletableImageThumb
+              key={p.id}
+              src={p.image}
+              alt="Body photo"
+              label="Delete photo"
+              className="h-28 w-20 border border-border"
+              onDelete={() => wardrobe.deletePhoto(p.id)}
+            />
           ))}
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && uploadPhoto(e.target.files[0])}
+          <FilePickButton
+            onFile={uploadPhoto}
+            trigger={
+              <button className="flex h-28 w-20 flex-col items-center justify-center gap-1 border border-dashed border-border text-xs text-muted-foreground hover:bg-muted">
+                <Camera className="size-5" /> Add
+              </button>
+            }
           />
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="flex h-28 w-20 flex-col items-center justify-center gap-1 border border-dashed border-border text-xs text-muted-foreground hover:bg-muted"
-          >
-            <Camera className="size-5" /> Add
-          </button>
         </div>
       </div>
 
       <div className={section}>
-        <h3 className={heading}>Data</h3>
-        {confirmClear ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-destructive">Delete everything — items, outfits, photos, history?</span>
-            <Button variant="destructive" size="sm" onClick={async () => { await wardrobe.clearAll(); setConfirmClear(false) }}>
-              Yes, delete all
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmClear(false)}>
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => setConfirmClear(true)}>
-            Clear all data
-          </Button>
-        )}
+        <FieldLabel as="h3" className={heading}>Data</FieldLabel>
+        <ConfirmButton
+          message="Delete everything — items, outfits, photos, history?"
+          confirmLabel="Yes, delete all"
+          onConfirm={async () => {
+            await wardrobe.clearAll()
+          }}
+          buttonProps={{ variant: 'outline', size: 'sm' }}
+        >
+          Clear all data
+        </ConfirmButton>
       </div>
 
       <p className="text-xs text-muted-foreground">

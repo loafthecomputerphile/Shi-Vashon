@@ -84,7 +84,11 @@
 		".iubenda-cs-accept-btn",
 		"[data-cookiescript='accept']",
 		".gdpr-cookie-accept",
-		"#cookie-action-ok"
+		"#cookie-action-ok",
+		"#shopify-pc__banner__btn-accept",
+		".klaro .cm-btn-accept-all",
+		"#cmplz-accept-all",
+		"#BorlabsCookieBox .brlbs-btn-accept-all"
 	];
 	var GENERIC_BANNER_HIDE = [
 		"#onetrust-banner-sdk",
@@ -97,7 +101,15 @@
 		".cookie-banner",
 		".cookie-consent",
 		"#cookie-banner",
-		"#cookie-consent"
+		"#cookie-consent",
+		"#shopify-pc__banner",
+		"#shopify-pc__dialog",
+		"#shopify-pc__prefs-dialog",
+		"#usercentrics-root",
+		"#klaro",
+		"#tarteaucitronRoot",
+		"#cmplz-cookiebanner-container",
+		"#BorlabsCookieBox"
 	];
 	var TYPE_MAP = {
 		top: [
@@ -209,6 +221,7 @@ button:hover {
 		doc;
 		config;
 		getHref;
+		view = null;
 		navObserver = null;
 		navTimer = null;
 		origPush = null;
@@ -233,27 +246,36 @@ button:hover {
 		}
 		scrape(img) {
 			const product = this.extractProduct(img.currentSrc || img.src);
-			if (product) (this.doc.defaultView?.parent ?? window).postMessage({
-				source: SCRAPER_SOURCE,
-				product
-			}, "*");
+			if (product) {
+				const message = {
+					source: SCRAPER_SOURCE,
+					product
+				};
+				(this.doc.defaultView?.parent ?? window).postMessage(message, "*");
+			}
 		}
 		static configForHost(host, configs) {
-			return configs.find((c) => c.matchHosts.some((k) => host === k || host.endsWith("." + k))) ?? null;
+			for (const config of configs) for (const matchHost of config.matchHosts) if (host === matchHost || host.endsWith("." + matchHost)) return config;
+			return null;
 		}
 		init() {
+			const view = this.doc.defaultView;
+			if (!view) return;
 			this.injectStyles();
-			this.origPush = this.doc.defaultView?.history.pushState.bind(this.doc.defaultView.history) ?? null;
-			this.origReplace = this.doc.defaultView?.history.replaceState.bind(this.doc.defaultView.history) ?? null;
-			if (this.origPush) this.doc.defaultView.history.pushState = ((orig, ...args) => {
-				orig(...args);
+			this.view = view;
+			const origPush = view.history.pushState.bind(view.history);
+			const origReplace = view.history.replaceState.bind(view.history);
+			this.origPush = origPush;
+			this.origReplace = origReplace;
+			view.history.pushState = (...args) => {
+				origPush(...args);
 				this.onNav();
-			});
-			if (this.origReplace) this.doc.defaultView.history.replaceState = ((orig, ...args) => {
-				orig(...args);
+			};
+			view.history.replaceState = (...args) => {
+				origReplace(...args);
 				this.onNav();
-			});
-			this.doc.defaultView?.addEventListener("popstate", this.onNav);
+			};
+			view.addEventListener("popstate", this.onNav);
 			this.navObserver = new MutationObserver(this.onNav);
 			this.navObserver.observe(this.doc.body, {
 				childList: true,
@@ -270,7 +292,7 @@ button:hover {
 			this.navObserver?.disconnect();
 			this.navObserver = null;
 			if (this.navTimer) clearTimeout(this.navTimer);
-			const view = this.doc.defaultView;
+			const view = this.view;
 			if (view) {
 				if (this.origPush) view.history.pushState = this.origPush;
 				if (this.origReplace) view.history.replaceState = this.origReplace;
@@ -294,7 +316,11 @@ button:hover {
 		}
 		detectProductPage() {
 			if (!new URL(this.getHref()).pathname.includes(this.config.isProductPage.urlPattern)) return false;
-			return this.parseJsonLd() !== null || this.doc.querySelector(this.config.selectors.name ?? "") !== null;
+			const nameSelector = this.config.selectors.name;
+			if (nameSelector) {
+				if (this.doc.querySelector(nameSelector) !== null) return true;
+			}
+			return this.parseJsonLd() !== null;
 		}
 		injectStyles() {
 			if (this.styleEl) return;
@@ -313,28 +339,31 @@ button:hover {
 				const parent = img.parentElement;
 				if (parent) {
 					parent.classList.add("store-scraper-parent");
-					const host = this.doc.createElement("span");
-					host.className = "store-scraper-save-host";
-					const shadow = host.attachShadow({ mode: "open" });
-					const style = this.doc.createElement("style");
-					style.textContent = SAVE_BUTTON_STYLE;
-					shadow.appendChild(style);
-					const btn = this.doc.createElement("button");
-					btn.type = "button";
-					btn.textContent = "+ Save";
-					btn.addEventListener("click", (e) => {
-						e.preventDefault();
-						e.stopPropagation();
-						btn.textContent = "✓ Saved";
-						setTimeout(() => {
-							btn.textContent = "+ Save";
-						}, 1500);
-						this.scrape(img);
-					});
-					shadow.appendChild(btn);
-					parent.appendChild(host);
+					this.addSaveButton(parent, img);
 				}
 			}
+		}
+		addSaveButton(parent, img) {
+			const host = this.doc.createElement("span");
+			host.className = "store-scraper-save-host";
+			const shadow = host.attachShadow({ mode: "open" });
+			const style = this.doc.createElement("style");
+			style.textContent = SAVE_BUTTON_STYLE;
+			shadow.appendChild(style);
+			const btn = this.doc.createElement("button");
+			btn.type = "button";
+			btn.textContent = "+ Save";
+			btn.addEventListener("click", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				btn.textContent = "✓ Saved";
+				setTimeout(() => {
+					btn.textContent = "+ Save";
+				}, 1500);
+				this.scrape(img);
+			});
+			shadow.appendChild(btn);
+			parent.appendChild(host);
 		}
 		clearHighlights() {
 			for (const img of this.doc.querySelectorAll("." + HIGHLIGHT_CLASS)) {
@@ -346,10 +375,22 @@ button:hover {
 		}
 		extractProduct(pickedImage) {
 			const ld = this.parseJsonLd();
-			let url = ld && typeof ld.url === "string" ? ld.url : null;
-			let image = pickedImage ?? (ld && typeof ld.image === "string" ? ld.image : Array.isArray(ld?.image) ? ld.image[0] : null);
-			let name = ld && typeof ld.name === "string" ? ld.name : null;
-			let brand = ld?.brand && typeof ld.brand === "object" && "name" in ld.brand ? String(ld.brand.name) : typeof ld?.brand === "string" ? ld.brand : null;
+			let url = null;
+			if (ld && typeof ld.url === "string") url = ld.url;
+			let image = null;
+			if (pickedImage) image = pickedImage;
+			else if (ld) {
+				if (typeof ld.image === "string") image = ld.image;
+				else if (Array.isArray(ld.image) && typeof ld.image[0] === "string") image = ld.image[0];
+			}
+			let name = null;
+			if (ld && typeof ld.name === "string") name = ld.name;
+			let brand = null;
+			if (ld) {
+				const rawBrand = ld.brand;
+				if (typeof rawBrand === "string") brand = rawBrand;
+				else if (rawBrand && typeof rawBrand === "object" && "name" in rawBrand) brand = String(rawBrand.name);
+			}
 			if (!name) name = this.pick("name", false);
 			if (!image) image = this.pick("image", true);
 			if (!url) {
@@ -360,7 +401,11 @@ button:hover {
 					url = u.href;
 				} catch {}
 			}
-			const type = this.typeFromText([name, this.pick("type", false)].filter(Boolean).join(" "));
+			const texts = [];
+			if (name) texts.push(name);
+			const breadcrumb = this.pick("type", false);
+			if (breadcrumb) texts.push(breadcrumb);
+			const type = this.typeFromText(texts.join(" "));
 			if (type === null) return null;
 			if (!url && !image && !name) return null;
 			return {
@@ -372,14 +417,15 @@ button:hover {
 			};
 		}
 		pick(field, isImg) {
-			const sel = this.config.selectors[field === "type" ? "type" : field === "image" ? "image" : "name"];
-			const fbKey = field === "image" ? "image" : field === "name" ? "name" : null;
-			const fb = fbKey ? this.config.fallbacks?.[fbKey] : void 0;
+			const sel = this.config.selectors[field];
 			if (sel) {
 				const v = this.fromSelector(sel, isImg);
 				if (v) return v;
 			}
-			return fb ? this.fromSelector(fb, isImg) : null;
+			if (field === "type") return null;
+			const fb = this.config.fallbacks?.[field];
+			if (fb) return this.fromSelector(fb, isImg);
+			return null;
 		}
 		parseJsonLd() {
 			const scripts = this.doc.querySelectorAll("script[type=\"application/ld+json\"]");
@@ -393,7 +439,8 @@ button:hover {
 				}
 				if (typeof data !== "object" || data === null) continue;
 				const obj = data;
-				if ((Array.isArray(obj["@type"]) ? obj["@type"] : [obj["@type"]]).includes(want)) return obj;
+				const rawType = obj["@type"];
+				if ((Array.isArray(rawType) ? rawType : [rawType]).includes(want)) return obj;
 			}
 			return null;
 		}
@@ -466,26 +513,40 @@ button:hover {
 			return u;
 		}
 	}
-	history.pushState = ((s, t, u) => origPush(s, t, proxied(u)));
-	history.replaceState = ((s, t, u) => origReplace(s, t, proxied(u)));
+	function proxiedPush(data, unused, url) {
+		origPush(data, unused, proxied(url));
+	}
+	function proxiedReplace(data, unused, url) {
+		origReplace(data, unused, proxied(url));
+	}
+	history.pushState = proxiedPush;
+	history.replaceState = proxiedReplace;
 	var config = StoreScraper.configForHost(new URL(storeHref()).host, SITE_CONFIGS);
 	if (config) {
 		new StoreScraper(document, config, { getHref: storeHref }).init();
-		(window.parent ?? window).postMessage({
+		const status = {
 			source: "scraper-status",
 			page: storeHref(),
 			productPage: new URL(storeHref()).pathname.includes(config.isProductPage.urlPattern)
-		}, "*");
-	} else (window.parent ?? window).postMessage({
-		source: "scraper-status",
-		page: storeHref(),
-		productPage: false,
-		noConfig: true
-	}, "*");
+		};
+		window.parent.postMessage(status, "*");
+	} else {
+		const status = {
+			source: "scraper-status",
+			page: storeHref(),
+			productPage: false,
+			noConfig: true
+		};
+		window.parent.postMessage(status, "*");
+	}
 	window.addEventListener("message", (e) => {
 		const d = e.data;
 		if (d?.source !== "scrape-saved" || !d.image) return;
-		const target = [...document.querySelectorAll("img")].find((i) => (i.currentSrc || i.src) === d.image);
+		let target = null;
+		for (const img of document.querySelectorAll("img")) if ((img.currentSrc || img.src) === d.image) {
+			target = img;
+			break;
+		}
 		if (!target) return;
 		const prev = target.style.outlineColor;
 		target.style.outlineColor = "#1e90ff";

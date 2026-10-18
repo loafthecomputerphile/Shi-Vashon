@@ -3,7 +3,7 @@
 // scraper has full same-origin DOM access (the thing cross-origin iframes
 // can never have).
 import { SITE_CONFIGS } from "./catalog";
-import { StoreScraper, type SiteConfig } from "./scraper";
+import { StoreScraper } from "./scraper";
 
 // Proxied pages live at https://<worker>/p?u=<store-url> — unwrap the real
 // store URL so the scraper sees the store's own paths.
@@ -21,6 +21,10 @@ function storeHref(): string {
 // patches compose (scraper calls the wrapper we install here).
 const origPush = history.pushState.bind(history);
 const origReplace = history.replaceState.bind(history);
+
+// Turn a store URL into a proxied /p?u=... URL when it points at this same
+// origin (i.e. it's a store page served by the worker). Other URLs pass
+// through untouched.
 function proxied(u: string | URL | null | undefined): string | URL | undefined {
   if (u == null) return undefined;
   try {
@@ -35,43 +39,50 @@ function proxied(u: string | URL | null | undefined): string | URL | undefined {
     return u;
   }
 }
-history.pushState = ((s: unknown, t: string, u: string | URL | null | undefined) =>
-  origPush(s as never, t, proxied(u))) as typeof history.pushState;
-history.replaceState = ((s: unknown, t: string, u: string | URL | null | undefined) =>
-  origReplace(s as never, t, proxied(u))) as typeof history.replaceState;
 
-const config = StoreScraper.configForHost(
-  new URL(storeHref()).host,
-  SITE_CONFIGS as unknown as SiteConfig[],
-);
+// Same arguments as the real pushState/replaceState; only the url argument
+// is rewritten first. `data` and `unused` are just passed through.
+function proxiedPush(data: unknown, unused: string, url?: string | URL | null): void {
+  origPush(data, unused, proxied(url));
+}
+function proxiedReplace(data: unknown, unused: string, url?: string | URL | null): void {
+  origReplace(data, unused, proxied(url));
+}
+history.pushState = proxiedPush;
+history.replaceState = proxiedReplace;
+
+const config = StoreScraper.configForHost(new URL(storeHref()).host, SITE_CONFIGS);
 if (config) {
   new StoreScraper(document, config, { getHref: storeHref }).init();
   // Tell the parent the scraper is alive and whether this is a product page —
   // without this the parent can't tell "no highlights by design" from
   // "the iframe escaped the proxy and nothing is injected".
-  (window.parent ?? window).postMessage(
-    {
-      source: "scraper-status",
-      page: storeHref(),
-      productPage: new URL(storeHref()).pathname.includes(config.isProductPage.urlPattern),
-    },
-    "*",
-  );
+  const status = {
+    source: "scraper-status",
+    page: storeHref(),
+    productPage: new URL(storeHref()).pathname.includes(config.isProductPage.urlPattern),
+  };
+  window.parent.postMessage(status, "*");
 } else {
-  (window.parent ?? window).postMessage(
-    { source: "scraper-status", page: storeHref(), productPage: false, noConfig: true },
-    "*",
-  );
+  const status = { source: "scraper-status", page: storeHref(), productPage: false, noConfig: true };
+  window.parent.postMessage(status, "*");
 }
 
 // Parent acks a successful save so the clicked image can flash blue.
 window.addEventListener("message", (e) => {
   const d = e.data as { source?: string; image?: string };
   if (d?.source !== "scrape-saved" || !d.image) return;
-  const target = [...document.querySelectorAll<HTMLImageElement>("img")].find(
-    (i) => (i.currentSrc || i.src) === d.image,
-  );
+
+  // Find the <img> on the page whose src matches the saved product image.
+  let target: HTMLImageElement | null = null;
+  for (const img of document.querySelectorAll<HTMLImageElement>("img")) {
+    if ((img.currentSrc || img.src) === d.image) {
+      target = img;
+      break;
+    }
+  }
   if (!target) return;
+
   const prev = target.style.outlineColor;
   target.style.outlineColor = "#1e90ff";
   setTimeout(() => {

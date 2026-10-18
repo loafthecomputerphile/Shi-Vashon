@@ -1,18 +1,27 @@
-import { useRef, useState } from 'react'
-import { Camera, Loader2, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { Camera, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { OutfitImaginator } from '@/ai/api'
 import { API_KEY_STORE } from '@/components/Settings'
 import { toDataUrl } from '@/scraper/catalog'
 import { NO_FILTERS, marketplaceOf, matchesQuery, type Filters } from '@/lib/filters'
+import { fileToDataUrl } from '@/lib/file'
 import { ClothingFilterBar } from '@/components/ui/filterBar'
+import { LoadingButton } from '@/components/kit/buttons'
+import { UnderlineTabs, pillBase } from '@/components/kit/tabs'
+import { FilePickButton, FieldLabel } from '@/components/kit/fields'
+import { ImageTile, TileCaption, CollageTile, DeletableImageThumb, Heading } from '@/components/kit/tiles'
+import { EmptyState, SpinnerOverlay } from '@/components/kit/feedback'
 import type { Clothing, Outfit, OutfitSlot } from '@/types'
-import type { useWardrobe } from '@/hooks/useWardrobe'
+import type { Wardrobe } from '@/hooks/useWardrobe'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
-import { pillBase, pillActive, pillInactive, sectionHeading, cardCls, labelCls } from '@/lib/ui'
 
-type Wardrobe = ReturnType<typeof useWardrobe>
+// TryOn.tsx — the virtual try-on screen. Pick one clothing item or a whole
+// outfit on the left, see the target photo (your body photo) giant on the
+// right, and press "Generate" to have the AI dress the person in the photo.
+// The AI result replaces the target photo on screen until kept or discarded.
 
 const SLOT_ORDER: OutfitSlot[] = ['top', 'bottom', 'hat', 'dress', 'jacket']
 
@@ -40,22 +49,16 @@ async function resolveItem(item: Clothing): Promise<Clothing> {
 }
 
 async function resolveOutfit(outfit: Outfit): Promise<Outfit> {
-  const entries = await Promise.all(
-    SLOT_ORDER.map(async (s) => [s, outfit[s] ? await resolveItem(outfit[s]!) : null] as const),
-  )
-  return { ...outfit, ...Object.fromEntries(entries) }
+  // ponytail: resolve each slot one at a time instead of Promise.all +
+  // Object.fromEntries — same result, easier to read.
+  const resolved: Outfit = { ...outfit }
+  for (const slot of SLOT_ORDER) {
+    const item = outfit[slot]
+    resolved[slot] = item ? await resolveItem(item) : null
+  }
+  return resolved
 }
 
-const tileCls = (selected: boolean) =>
-  cn(
-    'relative aspect-square overflow-hidden border bg-muted/40 transition-colors',
-    selected
-      ? 'border-foreground outline-2 -outline-offset-2 outline-foreground'
-      : 'border-border/60 hover:border-foreground/40',
-  )
-
-// Try-On: pick one item or a whole outfit on the left, see the target photo
-// giant on the right. The AI result replaces the target until kept or discarded.
 export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
   const [photoId, setPhotoId] = useState<number | null>(null)
   const [mode, setMode] = useState<'item' | 'outfit'>('item')
@@ -65,35 +68,50 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [pickerOpen, setPickerOpen] = useState(true)
+  const isMobile = useIsMobile()
 
   const photo = wardrobe.photos.find((p) => p.id === photoId) ?? wardrobe.photos[0] ?? null
   const item = wardrobe.clothing.find((c) => c.id === selectedId) ?? null
   const outfit = wardrobe.outfits.find((o) => o.id === selectedId) ?? null
   const apiKey = localStorage.getItem(API_KEY_STORE) ?? ''
 
-  // Items grouped in slot order, then by name — a clothing library, not a feed.
-  const pool = [...wardrobe.clothing].sort(
-    (a, b) => SLOT_ORDER.indexOf(a.type) - SLOT_ORDER.indexOf(b.type) || a.name.localeCompare(b.name),
-  )
+  // Items sorted so the library groups by slot (tops together, bottoms…),
+  // then alphabetically by name inside each slot.
+  const pool = [...wardrobe.clothing].sort((a, b) => {
+    const slotDiff = SLOT_ORDER.indexOf(a.type) - SLOT_ORDER.indexOf(b.type)
+    if (slotDiff !== 0) return slotDiff
+    return a.name.localeCompare(b.name)
+  })
+
   const types = SLOT_ORDER.filter((t) => pool.some((c) => c.type === t))
-  const brands = [...new Set(pool.map((c) => c.brand).filter(Boolean))]
-  const markets = [...new Set(pool.map(marketplaceOf).filter(Boolean))]
+
+  // Filter-pill values: unique brand names / marketplace hostnames.
+  const brands: string[] = []
+  const markets: string[] = []
+  for (const c of pool) {
+    if (c.brand && !brands.includes(c.brand)) brands.push(c.brand)
+    const market = marketplaceOf(c)
+    if (market && !markets.includes(market)) markets.push(market)
+  }
+
   const shownItems = pool.filter((c) => matchesQuery(c, q, f))
-  const shownOutfits = wardrobe.outfits.filter((o) => !q.trim() || o.name.toLowerCase().includes(q.trim().toLowerCase()))
+  const trimmedQ = q.trim().toLowerCase()
+  const shownOutfits = wardrobe.outfits.filter((o) => !trimmedQ || o.name.toLowerCase().includes(trimmedQ))
 
   async function uploadPhoto(file: File) {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.onerror = () => reject(reader.error)
-      reader.readAsDataURL(file)
-    })
-    await wardrobe.addPhoto(dataUrl)
+    await wardrobe.addPhoto(await fileToDataUrl(file))
   }
 
   function pick(id: number) {
-    setSelectedId((cur) => (cur === id ? null : id))
+    // Clicking the already-selected tile deselects it.
+    if (selectedId === id) {
+      setSelectedId(null)
+    } else {
+      setSelectedId(id)
+    }
+    // On a phone the picker folds away after a pick so the person fills the screen.
+    if (isMobile) setPickerOpen(false)
   }
 
   async function generate() {
@@ -109,22 +127,21 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
       const imaginator = new OutfitImaginator(MODEL)
       imaginator.setApiKey(apiKey)
       imaginator.setTargetImage(photo.image)
+
       let image: string | null = null
       if (mode === 'item' && item) {
         image = await imaginator.requestClothingImage(await resolveItem(item))
       } else if (mode === 'outfit' && outfit) {
         image = await imaginator.requestImage(await resolveOutfit(outfit))
       }
+
       if (!image) {
         setError('Generation returned no image — try again.')
         return
       }
+
       setResult(image)
-      await wardrobe.addTryon(
-        image,
-        mode === 'item' ? 'item' : 'outfit',
-        selectedId!, // generate() only runs when a tile is selected
-      )
+      await wardrobe.addTryon(image, mode, selectedId!) // generate() only runs when a tile is selected
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Generation failed — try again.')
     } finally {
@@ -135,28 +152,28 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
   if (wardrobe.photos.length === 0) {
     return (
       <section className="flex flex-1 items-center justify-center">
-        <div className="flex flex-col items-center gap-4 border border-dashed border-border p-14 text-center">
-          <p className="text-sm text-muted-foreground">
-            Add a full-body photo to start trying things on. It stays on this device.
-          </p>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && uploadPhoto(e.target.files[0])}
+        <EmptyState
+          variant="hero"
+          message="Add a full-body photo to start trying things on. It stays on this device."
+        >
+          <FilePickButton
+            onFile={uploadPhoto}
+            trigger={
+              <Button>
+                <Camera className="size-4" /> Add photo
+              </Button>
+            }
           />
-          <Button onClick={() => fileRef.current?.click()}>
-            <Camera className="size-4" /> Add photo
-          </Button>
-        </div>
+        </EmptyState>
       </section>
     )
   }
 
-  const searchPanel =
-    mode === 'item' ? (
-      // Same search + Filters popover as the Wardrobe's clothing library.
+  // Search bar: items get the full filter bar, outfits just a name search.
+  let searchPanel: React.ReactNode
+  if (mode === 'item') {
+    // Same search + Filters popover as the Wardrobe's clothing library.
+    searchPanel = (
       <ClothingFilterBar
         query={q}
         onQuery={setQ}
@@ -167,93 +184,133 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
         markets={markets}
         showFilters={pool.length > 0}
       />
-    ) : (
-      <Input placeholder="Search outfits" value={q} onChange={(e) => setQ(e.target.value)} />
     )
+  } else {
+    searchPanel = <Input placeholder="Search outfits" value={q} onChange={(e) => setQ(e.target.value)} />
+  }
 
-  const itemTiles = shownItems.map((c) => (
-    <button key={c.id} type="button" title={c.name} onClick={() => pick(c.id)} className="flex flex-col gap-1 text-left">
-      <div className={tileCls(item?.id === c.id)}>
-        {c.path && <img src={c.path} alt={c.name} className="h-full w-full object-cover" loading="lazy" />}
-      </div>
-      <p className="truncate text-[10px] text-muted-foreground">{c.name}</p>
-    </button>
-  ))
-
-  const outfitTiles = shownOutfits.map((o) => {
-    const pieces = SLOT_ORDER.map((s) => o[s]).filter(Boolean) as Clothing[]
-    return (
-      <button key={o.id} type="button" title={o.name || `Outfit #${o.id}`} onClick={() => pick(o.id)} className="flex flex-col gap-1 text-left">
-        <div className={cn(tileCls(outfit?.id === o.id), 'grid grid-cols-2 gap-px')}>
-          {pieces.length === 0 ? (
-            <div className="col-span-2 flex items-center justify-center">
-              <span className={labelCls}>Empty</span>
-            </div>
-          ) : (
-            pieces.map((c, i) => (
-              <div key={`${c.id}-${i}`} className={cn('aspect-square overflow-hidden bg-muted/40', pieces.length % 2 === 1 && i === 0 && 'col-span-2')}>
-                <img src={c.path} alt={c.name} className="h-full w-full object-cover" loading="lazy" />
-              </div>
-            ))
-          )}
-        </div>
-        <p className="truncate text-[10px] text-muted-foreground">{o.name || `Outfit #${o.id}`}</p>
-      </button>
-    )
-  })
+  // The tile grid: clothing buttons or outfit collage buttons.
+  let tiles: React.ReactNode
+  if (mode === 'item') {
+    tiles =
+      shownItems.length === 0 ? (
+        <EmptyState message="No matches." className="col-span-full p-2" />
+      ) : (
+        shownItems.map((c) => (
+          <button key={c.id} type="button" title={c.name} onClick={() => pick(c.id)} className="flex flex-col gap-1 text-left">
+            <ImageTile selected={item?.id === c.id}>
+              {c.path && <img src={c.path} alt={c.name} className="h-full w-full object-cover" loading="lazy" />}
+            </ImageTile>
+            <TileCaption>{c.name}</TileCaption>
+          </button>
+        ))
+      )
+  } else {
+    tiles =
+      shownOutfits.length === 0 ? (
+        <EmptyState message="No matches." className="col-span-full p-2" />
+      ) : (
+        shownOutfits.map((o) => {
+          const pieces = SLOT_ORDER.map((s) => o[s]).filter(Boolean) as Clothing[]
+          return (
+            <button key={o.id} type="button" title={o.name || `Outfit #${o.id}`} onClick={() => pick(o.id)} className="flex flex-col gap-1 text-left">
+              <CollageTile
+                items={pieces.map((c) => ({ src: c.path, alt: c.name }))}
+                emptyLabel="Empty"
+                className={cn(
+                  outfit?.id === o.id && 'border-foreground outline-2 -outline-offset-2 outline-foreground',
+                  outfit?.id !== o.id && 'hover:border-foreground/40',
+                )}
+              />
+              <TileCaption>{o.name || `Outfit #${o.id}`}</TileCaption>
+            </button>
+          )
+        })
+      )
+  }
 
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-6 lg:flex-row">
       {/* Picker: mode tabs, search, filters, tile grid, generate.
           Mobile shows the target photo first, so this sits after it (order). */}
       <aside className="order-2 flex min-h-0 w-full flex-col gap-3 lg:order-1 lg:w-96 lg:shrink-0">
-        <h2 className={cn(sectionHeading, 'mb-1')}>Try-On</h2>
-        <div className="flex gap-4">
-          {(['item', 'outfit'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => {
-                setMode(m)
-                setSelectedId(null)
-                setQ('')
-                setF(NO_FILTERS)
-              }}
-              className={cn(pillBase, 'py-2 text-xs uppercase tracking-[0.14em]', mode === m ? pillActive : pillInactive)}
-            >
-              {m}
-            </button>
-          ))}
+        <div className="flex items-center justify-between">
+          <Heading level={3} className="mb-1">Try-On</Heading>
+          <button
+            type="button"
+            onClick={() => setPickerOpen(!pickerOpen)}
+            aria-expanded={pickerOpen}
+            className={cn(pillBase, 'py-1 max-lg:inline-flex max-lg:items-center max-lg:gap-1 lg:hidden')}
+          >
+            <span className="text-xs uppercase tracking-[0.14em]">{pickerOpen ? 'Hide' : 'Show'}</span>
+            <ChevronDown className={cn('size-3.5 transition-transform', pickerOpen && 'rotate-180')} />
+          </button>
         </div>
-        {searchPanel}
-        <div className="grid min-h-0 flex-1 content-start grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2 overflow-y-auto pb-2 max-lg:max-h-[45dvh]">
-          {mode === 'item'
-            ? itemTiles.length === 0
-              ? <p className="col-span-full p-2 text-sm text-muted-foreground">No matches.</p>
-              : itemTiles
-            : outfitTiles.length === 0
-              ? <p className="col-span-full p-2 text-sm text-muted-foreground">No matches.</p>
-              : outfitTiles}
+        {/* Accordion body: tabs + search + grid. Hidden (mobile) when folded —
+            a mini view of the selection shows instead. Desktop always open. */}
+        <div className={cn('min-h-0 flex-1 flex-col gap-3', pickerOpen ? 'flex' : 'max-lg:hidden lg:flex')}>
+          <UnderlineTabs
+            items={[
+              { id: 'item', label: 'clothing' },
+              { id: 'outfit', label: 'outfits' },
+            ]}
+            activeId={mode}
+            onChange={(m) => {
+              // The tab ids are exactly our two modes; pick the matching one.
+              setMode(m === 'outfit' ? 'outfit' : 'item')
+              setSelectedId(null)
+              setQ('')
+              setF(NO_FILTERS)
+            }}
+          />
+          {searchPanel}
+          <div className="grid min-h-0 flex-1 content-start grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2 overflow-y-auto pb-2 max-lg:max-h-[45dvh]">
+            {tiles}
+          </div>
         </div>
+        {!pickerOpen && (
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            className="flex items-center gap-3 border border-border/60 bg-muted/40 p-2 text-left"
+          >
+            {item || outfit ? (
+              <>
+                {mode === 'item' && item && (
+                  <img src={item.path} alt={item.name} className="size-12 border border-border/60 object-cover" />
+                )}
+                {mode === 'outfit' && outfit && (
+                  <span className="grid size-12 grid-cols-2 gap-px overflow-hidden border border-border/60">
+                    {(SLOT_ORDER.map((s) => outfit[s]).filter(Boolean) as Clothing[]).map((c, i) => (
+                      <img key={`${c.id}-${i}`} src={c.path} alt={c.name} className="h-full w-full object-cover" />
+                    ))}
+                  </span>
+                )}
+                <span className="truncate text-xs text-muted-foreground">
+                  {mode === 'item' ? item?.name : outfit?.name || `Outfit #${outfit?.id}`}
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground">Tap to pick a {mode}</span>
+            )}
+          </button>
+        )}
         {error && <p className="text-sm text-destructive">{error}</p>}
-        <Button
+        <LoadingButton
           className="max-lg:w-full"
-          disabled={!photo || busy || !selectedId}
+          busy={busy}
+          busyLabel="Generating…"
+          disabled={!photo || !selectedId}
           onClick={generate}
         >
-          {busy ? (
-            <>
-              <Loader2 className="size-4 animate-spin" /> Generating…
-            </>
-          ) : (
-            `Generate on ${mode}`
-          )}
-        </Button>
+          Generate on {mode === 'item' ? 'clothing' : 'outfits'}
+        </LoadingButton>
       </aside>
 
       {/* Target: photo switcher, giant image, result actions, history (first on mobile) */}
       <div className="order-1 flex min-h-0 flex-1 flex-col items-center gap-3 overflow-y-auto pt-2 lg:order-2 lg:pl-4">
         <div className="flex w-full flex-wrap items-center gap-2">
-          <span className={labelCls}>Target photo</span>
+          <FieldLabel>Target photo</FieldLabel>
           {wardrobe.photos.map((p) => (
             <button
               key={p.id}
@@ -266,28 +323,21 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
               <img src={p.image} alt="Body photo" className="h-14 w-10 object-cover" />
             </button>
           ))}
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => e.target.files?.[0] && uploadPhoto(e.target.files[0])}
+          <FilePickButton
+            onFile={uploadPhoto}
+            trigger={
+              <button
+                className="flex h-14 w-10 shrink-0 items-center justify-center border border-dashed border-border text-muted-foreground hover:bg-muted"
+                aria-label="Add photo"
+              >
+                <Camera className="size-4" />
+              </button>
+            }
           />
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="flex h-14 w-10 shrink-0 items-center justify-center border border-dashed border-border text-muted-foreground hover:bg-muted"
-            aria-label="Add photo"
-          >
-            <Camera className="size-4" />
-          </button>
         </div>
 
         <div className="relative flex w-full flex-1 items-start justify-center">
-          {busy && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60">
-              <Loader2 className="size-8 animate-spin text-muted-foreground" />
-            </div>
-          )}
+          {busy && <SpinnerOverlay />}
           {result ? (
             <img src={result} alt="Try-on result" className="max-h-[70dvh] border border-border object-contain" />
           ) : (
@@ -296,7 +346,7 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
         </div>
 
         {result && (
-          <div className={cn(cardCls, 'flex w-full max-w-md flex-col gap-2 p-4')}>
+          <div className="flex w-full max-w-md flex-col gap-2 border border-border bg-card p-4">
             <div className="flex justify-center gap-2">
               <Button
                 onClick={async () => {
@@ -318,19 +368,16 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
 
         {wardrobe.tryons.length > 0 && (
           <div className="w-full">
-            <h3 className="mb-2 text-xs uppercase tracking-[0.14em] text-muted-foreground">History</h3>
+            <FieldLabel as="h3" className="mb-2">History</FieldLabel>
             <div className="flex gap-3 overflow-x-auto pb-2">
               {wardrobe.tryons.map((t) => (
-                <div key={t.id} className="group relative shrink-0">
-                  <img src={t.image} alt="Past try-on" className="h-32 w-24 object-cover" />
-                  <button
-                    aria-label="Delete"
-                    onClick={() => wardrobe.deleteTryon(t.id)}
-                    className="absolute top-1 right-1 bg-background/80 p-1 opacity-0 transition-opacity group-hover:opacity-100"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </div>
+                <DeletableImageThumb
+                  key={t.id}
+                  src={t.image}
+                  alt="Past try-on"
+                  className="h-32 w-24"
+                  onDelete={() => wardrobe.deleteTryon(t.id)}
+                />
               ))}
             </div>
           </div>

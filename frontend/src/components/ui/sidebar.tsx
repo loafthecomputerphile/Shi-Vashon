@@ -1,3 +1,4 @@
+// vendored shadcn/ui — edit carefully
 "use client"
 
 import * as React from "react"

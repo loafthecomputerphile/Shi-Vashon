@@ -13,8 +13,14 @@ function loadImage(src: string): Promise<HTMLImageElement | null> {
   })
 }
 
+// The outfit's filled slots, in order. Empty slots are skipped.
 function outfitItems(outfit: Outfit) {
-  return SLOTS.map((s) => outfit[s]).filter(Boolean) as NonNullable<Outfit[OutfitSlot]>[]
+  const items: NonNullable<Outfit[OutfitSlot]>[] = []
+  for (const slot of SLOTS) {
+    const item = outfit[slot]
+    if (item) items.push(item)
+  }
+  return items
 }
 
 async function collageBlob(outfit: Outfit): Promise<Blob | null> {
