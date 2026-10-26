@@ -2,35 +2,11 @@ import { useState } from 'react'
 import { Camera } from 'lucide-react'
 import type { Wardrobe } from '@/hooks/useWardrobe'
 import { fileToDataUrl } from '@/lib/file'
+import { ACCENTS, API_KEY_STORE, applyTheme, loadAccent, type Accent } from '@/lib/prefs'
 import { Heading } from '@/components/kit/tiles'
 import { ConfirmButton } from '@/components/kit/buttons'
 import { FieldLabel, PasswordField, FilePickButton, SwatchPicker } from '@/components/kit/fields'
 import { DeletableImageThumb } from '@/components/kit/tiles'
-
-// The four theme colors the user can pick. All theme styling lives in CSS.
-const ACCENTS = ['blush', 'lilac', 'sage', 'honey'] as const
-type Accent = (typeof ACCENTS)[number]
-
-const ACCENT_KEY = 'shiah-accent'
-const API_KEY_STORE = 'shiah-apikey'
-export { API_KEY_STORE }
-
-// Saved accents are just strings in localStorage, so check the value is one
-// we actually know before using it (otherwise fall back to the default).
-function loadAccent(): Accent {
-  const saved = localStorage.getItem(ACCENT_KEY)
-  const known = ACCENTS.find((a) => a === saved)
-  return known ?? 'blush'
-}
-
-// Light theme only — apply the accent to <html>. Called on load from App and on every change.
-export function applyTheme(accent: Accent) {
-  document.documentElement.dataset.accent = accent
-}
-
-export function initTheme() {
-  applyTheme(loadAccent())
-}
 
 export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
   const [accent, setAccent] = useState<Accent>(loadAccent)
