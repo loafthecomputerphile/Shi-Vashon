@@ -39,6 +39,7 @@ export default defineConfig({
     // '/proxy/p…' by prefix and forward unrewritten, 404ing at the worker.
     proxy: {
       '/p': { target: 'http://127.0.0.1:8787' },
+      '/api': { target: 'http://127.0.0.1:8787' },
     },
   },
   worker: { format: 'es' },

@@ -6,6 +6,7 @@ import {
 import { useWardrobe } from '@/hooks/useWardrobe'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { initTheme } from '@/lib/prefs'
+import { loadSession, clearSession, type Session } from '@/lib/auth'
 import { IconButton } from '@/components/kit/buttons'
 import { Heading } from '@/components/kit/tiles'
 import { CountBadge, useToast } from '@/components/kit/feedback'
@@ -21,11 +22,16 @@ import { NO_FILTERS, type Filters } from '@/lib/filters'
 // handlers, then renders the active tab, the nav bars, and the overlays
 // (cart drawer + toast). Each tab loads in its own lazy chunk so the
 // first paint stays small. The tab screens live in their own files:
-// Shop, TryOn, Settings, app/WardrobeView.
+// Shop, TryOn, Settings, Info, Admin, app/WardrobeView.
+// Nobody gets in without a session: no session → the Login screen
+// (with an Info page reachable from there).
 
 const Shop = lazy(() => import('@/components/Shop'))
 const TryOn = lazy(() => import('@/components/TryOn'))
 const Settings = lazy(() => import('@/components/Settings'))
+const Info = lazy(() => import('@/components/Info'))
+const Admin = lazy(() => import('@/components/Admin'))
+const Login = lazy(() => import('@/components/Login'))
 const WardrobeView = lazy(() => import('@/components/app/WardrobeView'))
 
 // Simple placeholder shown while a tab chunk is downloading.
@@ -36,6 +42,8 @@ function TabFallback() {
 export default function App() {
   const wardrobe = useWardrobe()
   const isMobile = useIsMobile()
+  const [session, setSession] = useState<Session | null>(null)
+  const [sessionChecked, setSessionChecked] = useState(false)
   const [tab, setTab] = useState<Tab>('shop')
   const [cartOpen, setCartOpen] = useState(false)
   const [creatingId, setCreatingId] = useState<number | null>(null)
@@ -86,6 +94,34 @@ export default function App() {
 
   useEffect(() => initTheme(), [])
 
+  // Ask the worker who we are (HttpOnly cookie — JS can't read it directly).
+  useEffect(() => {
+    loadSession()
+      .then(setSession)
+      .finally(() => setSessionChecked(true))
+  }, [])
+
+  async function logout() {
+    await clearSession()
+    setSession(null)
+    setTab('shop')
+  }
+
+  if (!sessionChecked) {
+    return <div className="p-8 text-muted-foreground">Loading…</div>
+  }
+
+  // Logged out: just the login screen (Info reachable from it). The wardrobe
+  // hook still runs above — harmless, it only touches this browser's storage.
+  if (!session) {
+    return (
+      <Suspense fallback={<div className="p-8 text-muted-foreground">Loading…</div>}>
+        <Login onLoggedIn={setSession} onInfo={() => setTab('info')} />
+        {tab === 'info' && <Info onBack={() => setTab('shop')} />}
+      </Suspense>
+    )
+  }
+
   if (wardrobe.status === 'loading') {
     return <div className="p-8 text-muted-foreground">Loading…</div>
   }
@@ -109,7 +145,7 @@ export default function App() {
     <SidebarProvider className="h-dvh overflow-hidden">
       {/* Exactly one nav: JS-driven, so sidebar and bottom bar can never both show */}
       {!isMobile && (
-        <AppSidebar tab={tab} onNavigate={setTab} cartCount={wardrobe.cart.length} onOpenCart={() => setCartOpen(true)} />
+        <AppSidebar tab={tab} onNavigate={setTab} cartCount={wardrobe.cart.length} onOpenCart={() => setCartOpen(true)} isAdmin={session.admin} />
       )}
       <SidebarInset>
         {isMobile && (
@@ -153,7 +189,13 @@ export default function App() {
             )}
             {tab === 'settings' && (
               <ScrollPanel>
-                <Settings wardrobe={wardrobe} />
+                <Settings wardrobe={wardrobe} session={session} onLogout={logout} />
+              </ScrollPanel>
+            )}
+            {tab === 'info' && <ScrollPanel><Info /></ScrollPanel>}
+            {tab === 'admin' && session.admin && (
+              <ScrollPanel>
+                <Admin session={session} />
               </ScrollPanel>
             )}
           </Suspense>

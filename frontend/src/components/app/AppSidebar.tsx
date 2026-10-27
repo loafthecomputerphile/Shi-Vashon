@@ -5,16 +5,17 @@ import {
 } from '@/components/ui/sidebar'
 import { FieldLabel } from '@/components/kit/fields'
 import { CountBadge } from '@/components/kit/feedback'
-import { TABS, type Tab } from '@/components/app/nav-shared'
+import { TABS, INFO_TAB, ADMIN_TAB, type Tab } from '@/components/app/nav-shared'
 
 // AppSidebar.tsx — desktop nav rail: shadcn Sidebar, print-shop styling
 // (uppercase, square).
 
-export default function AppSidebar({ tab, onNavigate, cartCount, onOpenCart }: {
+export default function AppSidebar({ tab, onNavigate, cartCount, onOpenCart, isAdmin }: {
   tab: Tab
   onNavigate: (t: Tab) => void
   cartCount: number
   onOpenCart: () => void
+  isAdmin: boolean
 }) {
   return (
     <Sidebar collapsible="none">
@@ -28,7 +29,7 @@ export default function AppSidebar({ tab, onNavigate, cartCount, onOpenCart }: {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {TABS.map((t) => {
+              {[...TABS, INFO_TAB, ...(isAdmin ? [ADMIN_TAB] : [])].map((t) => {
                 const Icon = t.icon
                 return (
                   <SidebarMenuItem key={t.id}>

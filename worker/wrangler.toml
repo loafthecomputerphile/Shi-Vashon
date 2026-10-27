@@ -3,3 +3,18 @@ main = "src/worker.js"
 compatibility_date = "2024-09-01"
 
 rules = [{ type = "Text", globs = ["**/*.txt"] }]
+
+# The "JSON db": user records, access requests, counters.
+# Create with: npx wrangler kv namespace create DB   (paste the id here)
+kv_namespaces = [{ binding = "DB", id = "e3cd09b399e0496d88881c59fa256c18" }]
+
+[vars]
+OWNER_EMAIL = "drewquashie@gmail.com" # access-request emails go here
+DAILY_LIMIT = "4"                       # generations per user per UTC day
+TOKEN_TTL_DAYS = "7"                    # session lifetime
+
+# Secrets (never in the toml) — set with:
+#   npx wrangler secret put OPENROUTER_KEY   # worker's own OpenRouter key
+#   npx wrangler secret put RESEND_KEY       # email sending
+#   npx wrangler secret put AUTH_SECRET      # random 32+ chars, signs sessions
+# For local dev put the same three in .dev.vars (gitignored).

@@ -1,16 +1,21 @@
 import { useState } from 'react'
 import { Camera } from 'lucide-react'
 import type { Wardrobe } from '@/hooks/useWardrobe'
+import type { Session } from '@/lib/auth'
 import { fileToDataUrl } from '@/lib/file'
-import { ACCENTS, API_KEY_STORE, applyTheme, loadAccent, type Accent } from '@/lib/prefs'
+import { ACCENTS, applyTheme, loadAccent, type Accent } from '@/lib/prefs'
 import { Heading } from '@/components/kit/tiles'
+import { Button } from '@/components/ui/button'
 import { ConfirmButton } from '@/components/kit/buttons'
-import { FieldLabel, PasswordField, FilePickButton, SwatchPicker } from '@/components/kit/fields'
+import { FieldLabel, FilePickButton, SwatchPicker } from '@/components/kit/fields'
 import { DeletableImageThumb } from '@/components/kit/tiles'
 
-export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
+export default function Settings({ wardrobe, session, onLogout }: {
+  wardrobe: Wardrobe
+  session: Session
+  onLogout: () => void
+}) {
   const [accent, setAccent] = useState<Accent>(loadAccent)
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(API_KEY_STORE) ?? '')
   function chooseAccent(id: string) {
     // SwatchPicker hands back a plain string id; only accept known accents.
     const next = ACCENTS.find((a) => a === id)
@@ -18,10 +23,6 @@ export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
     setAccent(next)
     localStorage.setItem(ACCENT_KEY, next)
     applyTheme(next)
-  }
-  function saveKey(value: string) {
-    setApiKey(value)
-    localStorage.setItem(API_KEY_STORE, value)
   }
 
   async function uploadPhoto(file: File) {
@@ -49,15 +50,9 @@ export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
       </div>
 
       <div className={section}>
-        <FieldLabel as="h3" className={heading}>API key</FieldLabel>
-        <p className="mb-2 text-xs text-muted-foreground">
-          OpenRouter key used for Try-On generation. Stored on this device only, in plain text.
-        </p>
-        <PasswordField
-          value={apiKey}
-          onChange={saveKey}
-          placeholder="sk-or-…"
-        />
+        <FieldLabel as="h3" className={heading}>Account</FieldLabel>
+        <p className="mb-2 text-sm">{session.email}{session.admin && ' — owner (unlimited generations)'}</p>
+        <Button variant="outline" size="sm" onClick={onLogout}>Log out</Button>
       </div>
 
       <div className={section}>
@@ -99,8 +94,8 @@ export default function Settings({ wardrobe }: { wardrobe: Wardrobe }) {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Shiah's Closet — everything lives in this browser. Nothing is uploaded anywhere except
-        try-on requests to OpenRouter.
+        Shiah's Closet — your wardrobe lives in this browser. Try-on requests are sent through the
+        app's server, which holds the AI API key for you.
       </p>
     </section>
   )

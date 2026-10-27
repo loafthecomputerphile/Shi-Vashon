@@ -1,14 +1,17 @@
 import { Outfit, Clothing } from "@/types";
 
-// api.ts — talks to OpenRouter to "try on" clothes using AI image generation.
+// api.ts — talks to the app's worker, which forwards to OpenRouter to "try
+// on" clothes using AI image generation.
 //
 // The idea: we send the AI a picture of a person (the "target" image, taken
 // from Settings) plus pictures of the clothing items, and it sends back a
 // picture of the person wearing them. The reply comes back as base64 text,
 // which we turn into a data URL so it can be saved in the wardrobe database
 // like any other image.
-
-const REQUEST_URL = "https://openrouter.ai/api/v1/images";
+//
+// The API key never touches the browser — the worker adds it server-side.
+// We only POST the same JSON body OpenRouter expects to /api/generate and
+// pass the reply back through.
 
 // Same slots as the Outfit interface in types.ts.
 const SLOT_ORDER = ["top", "bottom", "hat", "dress", "jacket"] as const;
@@ -18,16 +21,10 @@ const ASPECT_RATIO = "3:4";
 
 export class OutfitImaginator {
   private model: string;
-  private apiKey: string;
   private targetImage: string | null = null;
 
   constructor(model: string) {
     this.model = model;
-    this.apiKey = "";
-  }
-
-  setApiKey(key: string) {
-    this.apiKey = key;
   }
 
   setTargetImage(imageUrl: string) {
@@ -90,36 +87,33 @@ export class OutfitImaginator {
     return b64 ? `data:image/png;base64,${b64}` : null;
   }
 
-  // One raw POST to OpenRouter. Returns the parsed JSON response. Throws a
-  // readable error when the network fails or the API answers with an error.
+  // One POST through the worker (/api/generate adds the key + quota).
+  // Returns the parsed JSON response. Throws a readable error when the
+  // network fails, we're not logged in, the daily limit is hit, or the
+  // model API answers with an error.
   private async chat(body: object): Promise<unknown> {
     let response: Response;
     try {
-      response = await fetch(REQUEST_URL, {
+      response = await fetch("/api/generate", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify(body),
       });
     } catch {
-      throw new Error("Couldn't reach OpenRouter — check your connection.");
+      throw new Error("Couldn't reach the server — check your connection.");
     }
 
     if (!response.ok) {
-      // Surface the API's own message (bad model slug, auth, quota, …).
-      let msg = "";
+      // Surface the server's own message (quota, login, upstream error, …).
+      let msg = response.statusText;
       try {
-        const text = await response.text();
-        msg = text;
-        const parsed = JSON.parse(text) as { error?: { message?: string } };
-        if (parsed?.error?.message) msg = parsed.error.message;
+        const parsed = (await response.json()) as { error?: string };
+        if (parsed?.error) msg = parsed.error;
       } catch {
-        // couldn't parse JSON — fall back to the raw text collected above
+        // no JSON body — fall back to statusText
       }
-      if (!msg) msg = response.statusText;
-      throw new Error(`OpenRouter ${response.status}: ${msg}`);
+      throw new Error(msg);
     }
 
     return await response.json();

@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Camera, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { OutfitImaginator } from '@/ai/api'
-import { API_KEY_STORE } from '@/lib/prefs'
+import { loadSession, type Session } from '@/lib/auth'
 import { toDataUrl } from '@/scraper/catalog'
 import { NO_FILTERS, marketplaceOf, matchesQuery, type Filters } from '@/lib/filters'
 import { fileToDataUrl } from '@/lib/file'
@@ -69,12 +69,15 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(true)
+  const [session, setSession] = useState<Session | null>(null)
   const isMobile = useIsMobile()
+
+  // Quota display comes from /api/me (limit is null for the owner — hidden).
+  useEffect(() => { loadSession().then(setSession) }, [])
 
   const photo = wardrobe.photos.find((p) => p.id === photoId) ?? wardrobe.photos[0] ?? null
   const item = wardrobe.clothing.find((c) => c.id === selectedId) ?? null
   const outfit = wardrobe.outfits.find((o) => o.id === selectedId) ?? null
-  const apiKey = localStorage.getItem(API_KEY_STORE) ?? ''
 
   // Items sorted so the library groups by slot (tops together, bottoms…),
   // then alphabetically by name inside each slot.
@@ -116,16 +119,11 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
 
   async function generate() {
     if (!photo || busy) return
-    if (!apiKey) {
-      setError('Add your OpenRouter API key in Settings first.')
-      return
-    }
     setBusy(true)
     setError(null)
     setResult(null)
     try {
       const imaginator = new OutfitImaginator(MODEL)
-      imaginator.setApiKey(apiKey)
       imaginator.setTargetImage(photo.image)
 
       let image: string | null = null
@@ -142,8 +140,11 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
 
       setResult(image)
       await wardrobe.addTryon(image, mode, selectedId!) // generate() only runs when a tile is selected
+      // Refresh the daily counter after a successful generation.
+      loadSession().then(setSession)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Generation failed — try again.')
+      loadSession().then(setSession) // a spent slot updates the counter too
     } finally {
       setBusy(false)
     }
@@ -296,6 +297,11 @@ export default function TryOn({ wardrobe }: { wardrobe: Wardrobe }) {
           </button>
         )}
         {error && <p className="text-sm text-destructive">{error}</p>}
+        {session?.limit != null && (
+          <p className="text-xs text-muted-foreground">
+            {Math.max(0, session.limit - (session.used ?? 0))} of {session.limit} generations left today
+          </p>
+        )}
         <LoadingButton
           className="max-lg:w-full"
           busy={busy}
