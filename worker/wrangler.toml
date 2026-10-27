@@ -1,4 +1,6 @@
-name = "sh-vashon-proxy"
+# Deployed name must match what the app expects (frontend/.env.production
+# points VITE_PROXY_URL here; lib/auth.ts gets it via VITE_API_URL).
+name = "shi-vashon"
 main = "src/worker.js"
 compatibility_date = "2024-09-01"
 
@@ -12,6 +14,20 @@ kv_namespaces = [{ binding = "DB", id = "e3cd09b399e0496d88881c59fa256c18" }]
 OWNER_EMAIL = "drewquashie@gmail.com" # access-request emails go here
 DAILY_LIMIT = "4"                       # generations per user per UTC day
 TOKEN_TTL_DAYS = "7"                    # session lifetime
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
+enabled = false
 
 # Secrets (never in the toml) — set with:
 #   npx wrangler secret put OPENROUTER_KEY   # worker's own OpenRouter key
