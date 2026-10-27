@@ -31,7 +31,12 @@ export default {
     const reqUrl = new URL(request.url);
 
     if (reqUrl.pathname.startsWith("/api/")) {
-      return handleApi(request, env, reqUrl);
+      // CORS preflight for the cross-origin Pages app.
+      if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(request) });
+      const res = await handleApi(request, env, reqUrl);
+      const out = new Response(res.body, res);
+      for (const [k, v] of Object.entries(corsHeaders(request))) out.headers.set(k, v);
+      return out;
     }
 
     // Absolute base for rewritten links. Relative /p?u= links would resolve
@@ -179,15 +184,41 @@ async function sessionFrom(request, env) {
   return verifyToken(decodeURIComponent(m[1]), env.AUTH_SECRET);
 }
 
-// Session cookie: HttpOnly so page JS can't read the token, Secure,
-// SameSite=Lax (the app calls /api same-origin via the Vite proxy in dev
-// and same-site in prod, so Lax is enough — no third-party context).
+// Session cookie: HttpOnly so page JS can't read the token, Secure. The
+// deployed app is on a different origin (Pages) than the worker, so the
+// cookie must be SameSite=None to travel with cross-origin fetches — None
+// requires Secure, which is fine since everything is https. (Dev uses the
+// Vite proxy, same-origin, where Lax would also have worked.)
 function sessionCookie(token) {
   const maxAge = SESSION_TTL_DAYS * 60 * 60 * 24;
-  return `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}; Path=/`;
+  return `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=None; Max-Age=${maxAge}; Path=/`;
 }
 
-const CLEAR_COOKIE = `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Max-Age=0; Path=/`;
+const CLEAR_COOKIE = `${COOKIE}=; HttpOnly; Secure; SameSite=None; Max-Age=0; Path=/`;
+
+// The app lives on Pages, the worker on *.workers.dev — different origins,
+// so /api answers CORS. Cookies need an exact origin (not *) AND the cookie
+// must be SameSite=None to travel cross-site. Only the deployed app's
+// origins are allowed — no origin echo, other sites get nothing.
+const APP_ORIGINS = [
+  "https://shiahs-closet.pages.dev",
+  // Preview deployments get a random subdomain — allow the whole pages.dev
+  // family for this project only. ponytail: suffix match, not a full
+  // hostnames allowlist; good enough while the project name is unguessable.
+];
+function corsHeaders(request) {
+  const origin = request.headers.get("origin") || "";
+  const allowed = APP_ORIGINS.includes(origin) ||
+    /^https:\/\/[a-z0-9-]+\.shiahs-closet\.pages\.dev$/.test(origin);
+  if (!allowed) return {};
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-allow-credentials": "true",
+    "access-control-allow-headers": "Content-Type",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+    vary: "Origin",
+  };
+}
 
 // Daily generation limit: admin (owner) is unlimited; per-user override
 // otherwise the DAILY_LIMIT var.

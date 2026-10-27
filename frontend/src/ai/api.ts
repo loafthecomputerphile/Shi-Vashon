@@ -92,12 +92,14 @@ export class OutfitImaginator {
   // network fails, we're not logged in, the daily limit is hit, or the
   // model API answers with an error.
   private async chat(body: object): Promise<unknown> {
+    // Same base as lib/auth.ts: '' in dev (Vite proxy), worker URL in prod.
+    const base = import.meta.env.VITE_API_URL ?? '';
     let response: Response;
     try {
-      response = await fetch("/api/generate", {
+      response = await fetch(`${base}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
+        credentials: "include",
         body: JSON.stringify(body),
       });
     } catch {

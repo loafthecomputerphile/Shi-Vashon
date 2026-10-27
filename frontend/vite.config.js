@@ -41,6 +41,11 @@ export default defineConfig({
       '/p': { target: 'http://127.0.0.1:8787' },
       '/api': { target: 'http://127.0.0.1:8787' },
     },
+    // ponytail: expose env so lib/auth.ts can point at the worker origin in
+    // prod; dev leaves it unset and uses the proxy above.
+    define: {
+      'import.meta.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL ?? ''),
+    },
   },
   worker: { format: 'es' },
 })
